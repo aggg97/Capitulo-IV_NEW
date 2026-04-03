@@ -9,7 +9,7 @@ import plotly.express as px
 import streamlit as st
 from PIL import Image
 
-from utils import COMPANY_REPLACEMENTS, BARRELS_PER_M3
+from utils import COMPANY_REPLACEMENTS
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -72,17 +72,16 @@ def render_data_status(df):
 
 def calculate_cumulative_at_interval(df, interval_days):
     """
-    Calculate cumulative production for each well at exactly N days online.
+    Calculate cumulative production for each well.
+    Includes wells where cumulative TEF >= interval_days.
     """
-    mask = df["days_online"] <= interval_days
-    filtered = df[mask].copy()
-    
+    # Calculate cumulative production and days online per well
     cumulative = (
-        filtered.groupby("sigla")
+        df.groupby("sigla")
         .agg({
             "prod_pet": "sum",
             "prod_gas": "sum",
-            "days_online": "max",
+            "tef": "sum",  # Total days online (cumulative TEF)
             "empresa": "first",
             "areayacimiento": "first",
             "formprod": "first",
@@ -91,8 +90,8 @@ def calculate_cumulative_at_interval(df, interval_days):
         .reset_index()
     )
     
-    min_days_required = interval_days * 0.9
-    cumulative = cumulative[cumulative["days_online"] >= min_days_required]
+    # Filter: only wells with cumulative TEF >= required days
+    cumulative = cumulative[cumulative["tef"] >= interval_days]
     
     return cumulative
 
@@ -106,14 +105,16 @@ def get_cumulative_data(df):
     # Merge all intervals
     result = data_180d.rename(columns={
         "prod_pet": "oil_cum_180d",
-        "prod_gas": "gas_cum_180d"
-    })[["sigla", "oil_cum_180d", "gas_cum_180d", "empresa", "areayacimiento", "anio"]]
+        "prod_gas": "gas_cum_180d",
+        "tef": "tef_180d"
+    })[["sigla", "oil_cum_180d", "gas_cum_180d", "tef_180d", "empresa", "areayacimiento", "anio"]]
     
     if not data_1y.empty:
         result = result.merge(
-            data_1y[["sigla", "prod_pet", "prod_gas"]].rename(columns={
+            data_1y[["sigla", "prod_pet", "prod_gas", "tef"]].rename(columns={
                 "prod_pet": "oil_cum_1y",
-                "prod_gas": "gas_cum_1y"
+                "prod_gas": "gas_cum_1y",
+                "tef": "tef_1y"
             }),
             on="sigla",
             how="outer"
@@ -121,9 +122,10 @@ def get_cumulative_data(df):
     
     if not data_5y.empty:
         result = result.merge(
-            data_5y[["sigla", "prod_pet", "prod_gas"]].rename(columns={
+            data_5y[["sigla", "prod_pet", "prod_gas", "tef"]].rename(columns={
                 "prod_pet": "oil_cum_5y",
-                "prod_gas": "gas_cum_5y"
+                "prod_gas": "gas_cum_5y",
+                "tef": "tef_5y"
             }),
             on="sigla",
             how="outer"
@@ -163,7 +165,7 @@ def main():
         top_gas = latest_data.nlargest(TOP_N_WELLS, "gas_rate")
         top_oil = latest_data.nlargest(TOP_N_WELLS, "oil_rate")
         
-        # Gas ranking - UNIDADES CORREGIDAS A km3/d
+        # Gas ranking
         st.subheader("🔥 Ranking actual: Top 5 pozos de gas más productivos")
         fig_gas = px.bar(
             top_gas.sort_values(by="gas_rate"),
@@ -223,7 +225,7 @@ def main():
         Una evaluación más representativa considera la producción acumulada en el tiempo (ver pestaña "Producción Acumulada").
         """)
     
-    # ── TAB 2: Cumulative Production (New Enhancement) ────────────────────────
+    # ── TAB 2: Cumulative Production ──────────────────────────────────────────
     with tab_cumulative:
         st.subheader("📈 Análisis de Producción Acumulada por Pozo")
         st.caption("Comparación de productividad acumulada a 180 días, 1 año y 5 años")
@@ -237,11 +239,34 @@ def main():
         wells_1y = cum_data["oil_cum_1y"].notna().sum() if "oil_cum_1y" in cum_data.columns else 0
         wells_5y = cum_data["oil_cum_5y"].notna().sum() if "oil_cum_5y" in cum_data.columns else 0
         
-        col1.metric("Pozos con >180 días", wells_180d)
-        col2.metric("Pozos con >1 año", wells_1y)
-        col3.metric("Pozos con >5 años", wells_5y)
+        col1.metric("Pozos con ≥180 días", wells_180d)
+        col2.metric("Pozos con ≥1 año", wells_1y)
+        col3.metric("Pozos con ≥5 años", wells_5y)
         
-        # Oil Cumulative Rankings - AHORA EN km3
+        # Debug info
+        with st.expander("🔍 Diagnóstico: Distribución de días de producción"):
+            # Show distribution of total production days across all wells
+            all_wells = df.groupby("sigla")["tef"].sum().reset_index()
+            all_wells.columns = ["sigla", "total_tef"]
+            
+            fig_dist = px.histogram(
+                all_wells, 
+                x="total_tef",
+                nbins=50,
+                title="Distribución de días de producción acumulados (TEF) por pozo",
+                labels={"total_tef": "Días acumulados (TEF)", "count": "Cantidad de pozos"}
+            )
+            fig_dist.add_vline(x=180, line_dash="dash", line_color="green", annotation_text="180d")
+            fig_dist.add_vline(x=365, line_dash="dash", line_color="blue", annotation_text="1año")
+            fig_dist.add_vline(x=1825, line_dash="dash", line_color="red", annotation_text="5años")
+            st.plotly_chart(fig_dist, use_container_width=True)
+            
+            st.write(f"**Total de pozos en base de datos:** {len(all_wells)}")
+            st.write(f"**Pozos con ≥180d:** {(all_wells['total_tef'] >= 180).sum()}")
+            st.write(f"**Pozos con ≥1 año:** {(all_wells['total_tef'] >= 365).sum()}")
+            st.write(f"**Pozos con ≥5 años:** {(all_wells['total_tef'] >= 1825).sum()}")
+        
+        # Oil Cumulative Rankings - EN km3
         st.markdown("---")
         st.markdown("### ⛽ Petróleo Acumulado (km³)")
         
@@ -251,7 +276,6 @@ def main():
             st.markdown("**@ 180 días**")
             if wells_180d > 0:
                 top_oil_180d = cum_data.nlargest(TOP_N_WELLS, "oil_cum_180d")
-                # Convertir a km3 (miles de m3)
                 top_oil_180d_display = top_oil_180d.copy()
                 top_oil_180d_display["oil_cum_180d_km3"] = top_oil_180d_display["oil_cum_180d"] / 1000
                 
@@ -263,7 +287,7 @@ def main():
                     orientation="h",
                     labels={"oil_cum_180d_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                     text="oil_cum_180d_km3",
-                    hover_data=["areayacimiento"],
+                    hover_data=["areayacimiento", "tef_180d"],
                     height=350
                 )
                 fig_oil_180d.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
@@ -276,7 +300,6 @@ def main():
             st.markdown("**@ 1 año**")
             if wells_1y > 0:
                 top_oil_1y = cum_data.nlargest(TOP_N_WELLS, "oil_cum_1y")
-                # Convertir a km3
                 top_oil_1y_display = top_oil_1y.copy()
                 top_oil_1y_display["oil_cum_1y_km3"] = top_oil_1y_display["oil_cum_1y"] / 1000
                 
@@ -288,7 +311,7 @@ def main():
                     orientation="h",
                     labels={"oil_cum_1y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                     text="oil_cum_1y_km3",
-                    hover_data=["areayacimiento"],
+                    hover_data=["areayacimiento", "tef_1y"],
                     height=350
                 )
                 fig_oil_1y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
@@ -297,11 +320,10 @@ def main():
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years oil (full width if available) - EN km3
+        # 5 years oil
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_oil_5y = cum_data.nlargest(TOP_N_WELLS, "oil_cum_5y")
-            # Convertir a km3
             top_oil_5y_display = top_oil_5y.copy()
             top_oil_5y_display["oil_cum_5y_km3"] = top_oil_5y_display["oil_cum_5y"] / 1000
             
@@ -313,14 +335,14 @@ def main():
                 orientation="h",
                 labels={"oil_cum_5y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                 text="oil_cum_5y_km3",
-                hover_data=["areayacimiento"],
+                hover_data=["areayacimiento", "tef_5y"],
                 height=350
             )
             fig_oil_5y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
             fig_oil_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_oil_5y, use_container_width=True, key="oil_5y")
         
-        # Gas Cumulative Rankings - AHORA EN MMm3
+        # Gas Cumulative Rankings - EN MMm3
         st.markdown("---")
         st.markdown("### 🔥 Gas Acumulado (MMm³)")
         
@@ -330,7 +352,6 @@ def main():
             st.markdown("**@ 180 días**")
             if wells_180d > 0:
                 top_gas_180d = cum_data.nlargest(TOP_N_WELLS, "gas_cum_180d")
-                # Convertir a MMm3 (millones de m3)
                 top_gas_180d_display = top_gas_180d.copy()
                 top_gas_180d_display["gas_cum_180d_MMm3"] = top_gas_180d_display["gas_cum_180d"] / 1_000_000
                 
@@ -342,7 +363,7 @@ def main():
                     orientation="h",
                     labels={"gas_cum_180d_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                     text="gas_cum_180d_MMm3",
-                    hover_data=["areayacimiento"],
+                    hover_data=["areayacimiento", "tef_180d"],
                     height=350
                 )
                 fig_gas_180d.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
@@ -355,7 +376,6 @@ def main():
             st.markdown("**@ 1 año**")
             if wells_1y > 0:
                 top_gas_1y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_1y")
-                # Convertir a MMm3
                 top_gas_1y_display = top_gas_1y.copy()
                 top_gas_1y_display["gas_cum_1y_MMm3"] = top_gas_1y_display["gas_cum_1y"] / 1_000_000
                 
@@ -367,7 +387,7 @@ def main():
                     orientation="h",
                     labels={"gas_cum_1y_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                     text="gas_cum_1y_MMm3",
-                    hover_data=["areayacimiento"],
+                    hover_data=["areayacimiento", "tef_1y"],
                     height=350
                 )
                 fig_gas_1y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
@@ -376,11 +396,10 @@ def main():
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years gas - EN MMm3
+        # 5 years gas
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_gas_5y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_5y")
-            # Convertir a MMm3
             top_gas_5y_display = top_gas_5y.copy()
             top_gas_5y_display["gas_cum_5y_MMm3"] = top_gas_5y_display["gas_cum_5y"] / 1_000_000
             
@@ -392,7 +411,7 @@ def main():
                 orientation="h",
                 labels={"gas_cum_5y_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
                 text="gas_cum_5y_MMm3",
-                hover_data=["areayacimiento"],
+                hover_data=["areayacimiento", "tef_5y"],
                 height=350
             )
             fig_gas_5y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
@@ -403,20 +422,18 @@ def main():
         with st.expander("📋 Metodología"):
             st.markdown("""
             **Cálculo de Producción Acumulada:**
-            - Se suma la producción mes a mes desde el inicio de operaciones
-            - Solo se incluyen pozos con ≥90% del período objetivo completado
-            - @180d: Pozos con al menos 162 días de producción
-            - @1año: Pozos con al menos 328 días de producción  
-            - @5años: Pozos con al menos 1642 días de producción
+            - Se suma la producción total histórica de cada pozo
+            - Se incluyen pozos donde la suma de TEF (tiempo efectivo) ≥ días requeridos
+            - @180d: TEF acumulado ≥ 180 días
+            - @1año: TEF acumulado ≥ 365 días
+            - @5años: TEF acumulado ≥ 1,825 días
             
             **Unidades de Visualización:**
-            - Petróleo: **km³** (miles de metros cúbicos) = m³ ÷ 1,000
-            - Gas: **MMm³** (millones de metros cúbicos) = m³ ÷ 1,000,000
+            - Petróleo: **km³** (miles de m³)
+            - Gas: **MMm³** (millones de m³)
             
-            **Interpretación:**
-            - **180 días:** Productividad inicial post-frac (temprana)
-            - **1 año:** Performance sostenida mediano plazo
-            - **5 años:** Productividad de largo plazo (EUR)
+            **Nota:** Si hay pocos pozos con 5 años, es porque la mayoría de los pozos en Vaca Muerta 
+            son relativamente nuevos (boom de perforación reciente).
             """)
 
 
