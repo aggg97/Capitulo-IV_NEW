@@ -2,6 +2,7 @@
 Watchlist page - Top performing wells in Vaca Muerta.
 Tab 1: Current production rates (latest allocation)
 Tab 2: Cumulative production analysis @ 180d, 1y, 5y
+Tab 3: Production by Area and Company (daily rates)
 """
 
 import pandas as pd
@@ -15,6 +16,7 @@ from utils import COMPANY_REPLACEMENTS
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 TOP_N_WELLS = 5
+TOP_N_AREAS = 10
 DATA_MEMORY_KEY = "df"
 IMAGE_PATH = "Vaca Muerta rig.png"
 
@@ -132,6 +134,26 @@ def get_cumulative_data(df):
     return result
 
 
+# ── Area & Company Analysis Logic ──────────────────────────────────────────────
+
+def aggregate_by_area(data):
+    """Aggregate production by areayacimiento."""
+    return data.groupby("areayacimiento").agg({
+        "oil_rate": "sum",
+        "gas_rate": "sum",
+        "sigla": "count"  # Count of wells
+    }).reset_index().rename(columns={"sigla": "well_count"}).sort_values(by="areayacimiento")
+
+
+def aggregate_by_company(data):
+    """Aggregate production by empresaNEW."""
+    return data.groupby("empresaNEW").agg({
+        "oil_rate": "sum",
+        "gas_rate": "sum",
+        "sigla": "count"  # Count of wells
+    }).reset_index().rename(columns={"sigla": "well_count"}).sort_values(by="empresaNEW")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -142,9 +164,11 @@ def main():
     
     df["empresaNEW"] = df["empresa"].replace(COMPANY_REPLACEMENTS)
     
-    tab_rates, tab_cumulative = st.tabs([
+    # Create three tabs
+    tab_rates, tab_cumulative, tab_area_company = st.tabs([
         "📊 Caudales Actuales", 
-        "📈 Producción Acumulada (180d / 1año / 5años)"
+        "📈 Producción Acumulada",
+        "🏭 Por Área y Empresa"
     ])
     
     # ── TAB 1: Current Rates ──────────────────────────────────────────────────
@@ -234,7 +258,7 @@ def main():
         col2.metric("Pozos con ≥1 año", wells_1y)
         col3.metric("Pozos con ≥5 años", wells_5y)
         
-        # Oil Cumulative Rankings - EN km3 con 0 decimales
+        # Oil Cumulative Rankings
         st.markdown("---")
         st.markdown("### ⛽ Petróleo Acumulado (km³)")
         
@@ -309,7 +333,7 @@ def main():
             fig_oil_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_oil_5y, use_container_width=True, key="oil_5y")
         
-        # Gas Cumulative Rankings - EN MMm3 con 0 decimales
+        # Gas Cumulative Rankings
         st.markdown("---")
         st.markdown("### 🔥 Gas Acumulado (MMm³)")
         
@@ -383,6 +407,168 @@ def main():
             fig_gas_5y.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
             fig_gas_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_gas_5y, use_container_width=True, key="gas_5y")
+    
+    # ── TAB 3: Production by Area and Company ────────────────────────────────
+    with tab_area_company:
+        st.subheader("🏭 Producción por Área de Yacimiento y Empresa")
+        st.caption("Caudales diarios agregados (última alocación)")
+        
+        # Get latest data
+        data_filtered = df[df["tef"] > 0]
+        latest_date = data_filtered["date"].max()
+        latest_data = data_filtered[data_filtered["date"] == latest_date]
+        
+        st.write("**Fecha de datos:** ", latest_date.date())
+        
+        # Aggregate data
+        area_data = aggregate_by_area(latest_data)
+        company_data = aggregate_by_company(latest_data)
+        
+        # Top Areas
+        st.markdown("---")
+        st.markdown("### 🗺️ Top Áreas de Yacimiento")
+        
+        col_area_oil, col_area_gas = st.columns(2)
+        
+        with col_area_oil:
+            st.markdown("**⛽ Petróleo (m³/d)**")
+            top_areas_oil = area_data.nlargest(TOP_N_AREAS, "oil_rate")
+            
+            fig_area_oil = px.bar(
+                top_areas_oil.sort_values(by="oil_rate"),
+                y="areayacimiento",
+                x="oil_rate",
+                orientation="h",
+                labels={
+                    "oil_rate": "m³/d",
+                    "areayacimiento": "Área/Yacimiento",
+                    "well_count": "N° Pozos"
+                },
+                text="oil_rate",
+                hover_data=["well_count"],
+                color="oil_rate",
+                color_continuous_scale="Greens"
+            )
+            fig_area_oil.update_traces(texttemplate="%{text:.0f}", textposition="inside")
+            fig_area_oil.update_layout(
+                yaxis_title=None,
+                xaxis_title="m³/d",
+                coloraxis_showscale=False,
+                height=400
+            )
+            st.plotly_chart(fig_area_oil, use_container_width=True, key="area_oil")
+        
+        with col_area_gas:
+            st.markdown("**🔥 Gas (km³/d)**")
+            top_areas_gas = area_data.nlargest(TOP_N_AREAS, "gas_rate")
+            
+            fig_area_gas = px.bar(
+                top_areas_gas.sort_values(by="gas_rate"),
+                y="areayacimiento",
+                x="gas_rate",
+                orientation="h",
+                labels={
+                    "gas_rate": "km³/d",
+                    "areayacimiento": "Área/Yacimiento",
+                    "well_count": "N° Pozos"
+                },
+                text="gas_rate",
+                hover_data=["well_count"],
+                color="gas_rate",
+                color_continuous_scale="Oranges"
+            )
+            fig_area_gas.update_traces(texttemplate="%{text:.0f}", textposition="inside")
+            fig_area_gas.update_layout(
+                yaxis_title=None,
+                xaxis_title="km³/d",
+                coloraxis_showscale=False,
+                height=400
+            )
+            st.plotly_chart(fig_area_gas, use_container_width=True, key="area_gas")
+        
+        # Top Companies
+        st.markdown("---")
+        st.markdown("### 🏢 Top Empresas Operadoras")
+        
+        col_comp_oil, col_comp_gas = st.columns(2)
+        
+        with col_comp_oil:
+            st.markdown("**⛽ Petróleo (m³/d)**")
+            top_comp_oil = company_data.nlargest(TOP_N_AREAS, "oil_rate")
+            
+            fig_comp_oil = px.bar(
+                top_comp_oil.sort_values(by="oil_rate"),
+                y="empresaNEW",
+                x="oil_rate",
+                orientation="h",
+                labels={
+                    "oil_rate": "m³/d",
+                    "empresaNEW": "Empresa",
+                    "well_count": "N° Pozos"
+                },
+                text="oil_rate",
+                hover_data=["well_count"],
+                color="oil_rate",
+                color_continuous_scale="Blues"
+            )
+            fig_comp_oil.update_traces(texttemplate="%{text:.0f}", textposition="inside")
+            fig_comp_oil.update_layout(
+                yaxis_title=None,
+                xaxis_title="m³/d",
+                coloraxis_showscale=False,
+                height=400
+            )
+            st.plotly_chart(fig_comp_oil, use_container_width=True, key="comp_oil")
+        
+        with col_comp_gas:
+            st.markdown("**🔥 Gas (km³/d)**")
+            top_comp_gas = company_data.nlargest(TOP_N_AREAS, "gas_rate")
+            
+            fig_comp_gas = px.bar(
+                top_comp_gas.sort_values(by="gas_rate"),
+                y="empresaNEW",
+                x="gas_rate",
+                orientation="h",
+                labels={
+                    "gas_rate": "km³/d",
+                    "empresaNEW": "Empresa",
+                    "well_count": "N° Pozos"
+                },
+                text="gas_rate",
+                hover_data=["well_count"],
+                color="gas_rate",
+                color_continuous_scale="Reds"
+            )
+            fig_comp_gas.update_traces(texttemplate="%{text:.0f}", textposition="inside")
+            fig_comp_gas.update_layout(
+                yaxis_title=None,
+                xaxis_title="km³/d",
+                coloraxis_showscale=False,
+                height=400
+            )
+            st.plotly_chart(fig_comp_gas, use_container_width=True, key="comp_gas")
+        
+        # Summary table
+        st.markdown("---")
+        st.markdown("### 📋 Resumen Comparativo")
+        
+        col_table1, col_table2 = st.columns(2)
+        
+        with col_table1:
+            st.markdown("**Top 5 Áreas - Petróleo**")
+            summary_area = area_data.nlargest(5, "oil_rate")[["areayacimiento", "oil_rate", "gas_rate", "well_count"]]
+            summary_area.columns = ["Área", "Petróleo (m³/d)", "Gas (km³/d)", "Pozos"]
+            summary_area["Petróleo (m³/d)"] = summary_area["Petróleo (m³/d)"].round(0).astype(int)
+            summary_area["Gas (km³/d)"] = summary_area["Gas (km³/d)"].round(0).astype(int)
+            st.dataframe(summary_area, use_container_width=True, hide_index=True)
+        
+        with col_table2:
+            st.markdown("**Top 5 Empresas - Petróleo**")
+            summary_comp = company_data.nlargest(5, "oil_rate")[["empresaNEW", "oil_rate", "gas_rate", "well_count"]]
+            summary_comp.columns = ["Empresa", "Petróleo (m³/d)", "Gas (km³/d)", "Pozos"]
+            summary_comp["Petróleo (m³/d)"] = summary_comp["Petróleo (m³/d)"].round(0).astype(int)
+            summary_comp["Gas (km³/d)"] = summary_comp["Gas (km³/d)"].round(0).astype(int)
+            st.dataframe(summary_comp, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
