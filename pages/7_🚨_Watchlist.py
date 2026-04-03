@@ -241,9 +241,9 @@ def main():
         col2.metric("Pozos con >1 año", wells_1y)
         col3.metric("Pozos con >5 años", wells_5y)
         
-        # Oil Cumulative Rankings
+        # Oil Cumulative Rankings - AHORA EN km3
         st.markdown("---")
-        st.markdown("### ⛽ Petróleo Acumulado")
+        st.markdown("### ⛽ Petróleo Acumulado (km³)")
         
         col_oil_180d, col_oil_1y = st.columns(2)
         
@@ -251,18 +251,22 @@ def main():
             st.markdown("**@ 180 días**")
             if wells_180d > 0:
                 top_oil_180d = cum_data.nlargest(TOP_N_WELLS, "oil_cum_180d")
+                # Convertir a km3 (miles de m3)
+                top_oil_180d_display = top_oil_180d.copy()
+                top_oil_180d_display["oil_cum_180d_km3"] = top_oil_180d_display["oil_cum_180d"] / 1000
+                
                 fig_oil_180d = px.bar(
-                    top_oil_180d.sort_values(by="oil_cum_180d"),
+                    top_oil_180d_display.sort_values(by="oil_cum_180d_km3"),
                     y="sigla",
-                    x="oil_cum_180d",
+                    x="oil_cum_180d_km3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"oil_cum_180d": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="oil_cum_180d",
+                    labels={"oil_cum_180d_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="oil_cum_180d_km3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_oil_180d.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+                fig_oil_180d.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
                 fig_oil_180d.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_oil_180d, use_container_width=True, key="oil_180d")
             else:
@@ -272,45 +276,53 @@ def main():
             st.markdown("**@ 1 año**")
             if wells_1y > 0:
                 top_oil_1y = cum_data.nlargest(TOP_N_WELLS, "oil_cum_1y")
+                # Convertir a km3
+                top_oil_1y_display = top_oil_1y.copy()
+                top_oil_1y_display["oil_cum_1y_km3"] = top_oil_1y_display["oil_cum_1y"] / 1000
+                
                 fig_oil_1y = px.bar(
-                    top_oil_1y.sort_values(by="oil_cum_1y"),
+                    top_oil_1y_display.sort_values(by="oil_cum_1y_km3"),
                     y="sigla",
-                    x="oil_cum_1y",
+                    x="oil_cum_1y_km3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"oil_cum_1y": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="oil_cum_1y",
+                    labels={"oil_cum_1y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="oil_cum_1y_km3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_oil_1y.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+                fig_oil_1y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
                 fig_oil_1y.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_oil_1y, use_container_width=True, key="oil_1y")
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years oil (full width if available)
+        # 5 years oil (full width if available) - EN km3
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_oil_5y = cum_data.nlargest(TOP_N_WELLS, "oil_cum_5y")
+            # Convertir a km3
+            top_oil_5y_display = top_oil_5y.copy()
+            top_oil_5y_display["oil_cum_5y_km3"] = top_oil_5y_display["oil_cum_5y"] / 1000
+            
             fig_oil_5y = px.bar(
-                top_oil_5y.sort_values(by="oil_cum_5y"),
+                top_oil_5y_display.sort_values(by="oil_cum_5y_km3"),
                 y="sigla",
-                x="oil_cum_5y",
+                x="oil_cum_5y_km3",
                 color="empresaNEW",
                 orientation="h",
-                labels={"oil_cum_5y": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                text="oil_cum_5y",
+                labels={"oil_cum_5y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                text="oil_cum_5y_km3",
                 hover_data=["areayacimiento"],
                 height=350
             )
-            fig_oil_5y.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+            fig_oil_5y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
             fig_oil_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_oil_5y, use_container_width=True, key="oil_5y")
         
-        # Gas Cumulative Rankings - UNIDADES CORREGIDAS A km3
+        # Gas Cumulative Rankings - AHORA EN MMm3
         st.markdown("---")
-        st.markdown("### 🔥 Gas Acumulado")
+        st.markdown("### 🔥 Gas Acumulado (MMm³)")
         
         col_gas_180d, col_gas_1y = st.columns(2)
         
@@ -318,22 +330,22 @@ def main():
             st.markdown("**@ 180 días**")
             if wells_180d > 0:
                 top_gas_180d = cum_data.nlargest(TOP_N_WELLS, "gas_cum_180d")
-                # Convertir a km3 para visualización
+                # Convertir a MMm3 (millones de m3)
                 top_gas_180d_display = top_gas_180d.copy()
-                top_gas_180d_display["gas_cum_180d_km3"] = top_gas_180d_display["gas_cum_180d"] / 1000
+                top_gas_180d_display["gas_cum_180d_MMm3"] = top_gas_180d_display["gas_cum_180d"] / 1_000_000
                 
                 fig_gas_180d = px.bar(
-                    top_gas_180d_display.sort_values(by="gas_cum_180d_km3"),
+                    top_gas_180d_display.sort_values(by="gas_cum_180d_MMm3"),
                     y="sigla",
-                    x="gas_cum_180d_km3",
+                    x="gas_cum_180d_MMm3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"gas_cum_180d_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="gas_cum_180d_km3",
+                    labels={"gas_cum_180d_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="gas_cum_180d_MMm3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_gas_180d.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
+                fig_gas_180d.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
                 fig_gas_180d.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_gas_180d, use_container_width=True, key="gas_180d")
             else:
@@ -343,47 +355,47 @@ def main():
             st.markdown("**@ 1 año**")
             if wells_1y > 0:
                 top_gas_1y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_1y")
-                # Convertir a km3 para visualización
+                # Convertir a MMm3
                 top_gas_1y_display = top_gas_1y.copy()
-                top_gas_1y_display["gas_cum_1y_km3"] = top_gas_1y_display["gas_cum_1y"] / 1000
+                top_gas_1y_display["gas_cum_1y_MMm3"] = top_gas_1y_display["gas_cum_1y"] / 1_000_000
                 
                 fig_gas_1y = px.bar(
-                    top_gas_1y_display.sort_values(by="gas_cum_1y_km3"),
+                    top_gas_1y_display.sort_values(by="gas_cum_1y_MMm3"),
                     y="sigla",
-                    x="gas_cum_1y_km3",
+                    x="gas_cum_1y_MMm3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"gas_cum_1y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="gas_cum_1y_km3",
+                    labels={"gas_cum_1y_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="gas_cum_1y_MMm3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_gas_1y.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
+                fig_gas_1y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
                 fig_gas_1y.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_gas_1y, use_container_width=True, key="gas_1y")
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years gas - UNIDADES CORREGIDAS A km3
+        # 5 years gas - EN MMm3
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_gas_5y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_5y")
-            # Convertir a km3 para visualización
+            # Convertir a MMm3
             top_gas_5y_display = top_gas_5y.copy()
-            top_gas_5y_display["gas_cum_5y_km3"] = top_gas_5y_display["gas_cum_5y"] / 1000
+            top_gas_5y_display["gas_cum_5y_MMm3"] = top_gas_5y_display["gas_cum_5y"] / 1_000_000
             
             fig_gas_5y = px.bar(
-                top_gas_5y_display.sort_values(by="gas_cum_5y_km3"),
+                top_gas_5y_display.sort_values(by="gas_cum_5y_MMm3"),
                 y="sigla",
-                x="gas_cum_5y_km3",
+                x="gas_cum_5y_MMm3",
                 color="empresaNEW",
                 orientation="h",
-                labels={"gas_cum_5y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                text="gas_cum_5y_km3",
+                labels={"gas_cum_5y_MMm3": "MMm³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                text="gas_cum_5y_MMm3",
                 hover_data=["areayacimiento"],
                 height=350
             )
-            fig_gas_5y.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
+            fig_gas_5y.update_traces(texttemplate="%{text:,.2f}", textposition="inside")
             fig_gas_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_gas_5y, use_container_width=True, key="gas_5y")
         
@@ -397,9 +409,9 @@ def main():
             - @1año: Pozos con al menos 328 días de producción  
             - @5años: Pozos con al menos 1642 días de producción
             
-            **Unidades:**
-            - Petróleo: m³ (metros cúbicos)
-            - Gas: km³ (miles de metros cúbicos)
+            **Unidades de Visualización:**
+            - Petróleo: **km³** (miles de metros cúbicos) = m³ ÷ 1,000
+            - Gas: **MMm³** (millones de metros cúbicos) = m³ ÷ 1,000,000
             
             **Interpretación:**
             - **180 días:** Productividad inicial post-frac (temprana)
