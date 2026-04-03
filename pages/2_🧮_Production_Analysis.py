@@ -1,197 +1,229 @@
-import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from PIL import Image
 import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from PIL import Image
 
-# Load and sort the data
-# @st.cache_data
-# def load_and_sort_data(dataset_url):
-#     df = pd.read_csv(dataset_url, usecols=COLUMNS)
-#     df['date'] = pd.to_datetime(df['anio'].astype(str) + '-' + df['mes'].astype(str) + '-1')
-#     df['gas_rate'] = df['prod_gas'] / df['tef']
-#     df['oil_rate'] = df['prod_pet'] / df['tef']
-#     data_sorted = df.sort_values(by=['sigla', 'fecha_data'], ascending=True)
-#     return data_sorted
-
-# URL of the dataset
-#dataset_url = "http://datos.energia.gob.ar/dataset/c846e79c-026c-4040-897f-1ad3543b407c/resource/b5b58cdc-9e07-41f9-b392-fb9ec68b0725/download/produccin-de-pozos-de-gas-y-petrleo-no-convencional.csv"
-
-# Load and sort the data using the cached function
-#data_sorted = load_and_sort_data(dataset_url)
+from utils import COMPANY_REPLACEMENTS
 
 
-#Verificamos si los datos ya fueron cargados en la Main Page
-if 'df' in st.session_state:
-    # Recuperamos los datos de la memoria sin esperar un segundo
-    data_sorted = st.session_state['df']
-    data_sorted['date'] = pd.to_datetime(data_sorted['anio'].astype(str) + '-' + data_sorted['mes'].astype(str) + '-1')
-    data_sorted['gas_rate'] = data_sorted['prod_gas'] / data_sorted['tef']
-    data_sorted['oil_rate'] = data_sorted['prod_pet'] / data_sorted['tef']
-    data_sorted = data_sorted.sort_values(by=['sigla', 'date'], ascending=True)
-    
+# ── Session state ─────────────────────────────────────────────────────────────
+
+if "df" in st.session_state:
+    data_sorted = st.session_state["df"]
+    data_sorted["date"]       = pd.to_datetime(data_sorted["anio"].astype(str) + "-" + data_sorted["mes"].astype(str) + "-1")
+    data_sorted["gas_rate"]   = data_sorted["prod_gas"] / data_sorted["tef"]
+    data_sorted["oil_rate"]   = data_sorted["prod_pet"] / data_sorted["tef"]
+    data_sorted               = data_sorted.sort_values(by=["sigla", "date"], ascending=True)
+    data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
     st.info("Utilizando datos recuperados de la memoria.")
-    
 else:
     st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la Página Principal.")
-    
-# Sidebar filters
-st.header(f":blue[Análisis de Producción No Convencional]")
-image = Image.open('Vaca Muerta rig.png')
-st.sidebar.image(image)
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+
+st.header(":blue[Análisis de Producción No Convencional]")
+st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 st.sidebar.title("Por favor filtrar aquí:")
 
-# Selectbox for companies
 selected_company = st.sidebar.selectbox(
     "Seleccione la empresa",
-    options=data_sorted['empresa'].unique()
+    options=sorted(data_sorted["empresaNEW"].unique()),
 )
 
-# Filter data based on selected company
-company_data = data_sorted[data_sorted['empresa'] == selected_company]
+company_data = data_sorted[data_sorted["empresaNEW"] == selected_company]
 
-# Summarize production data by field area
-summary_df = company_data.groupby(['areayacimiento', 'date']).agg(
-    total_gas_rate=('gas_rate', 'sum'),
-    total_oil_rate=('oil_rate', 'sum')
-).reset_index()
 
-# Plot total oil production by field area over time using stacked area plot
-oil_rate_fig = go.Figure()
+# ── Company-level stacked area charts ────────────────────────────────────────
 
-color_palette = px.colors.qualitative.Set3  # Use a distinct color palette
+summary_df = (
+    company_data
+    .groupby(["areayacimiento", "date"])
+    .agg(total_gas_rate=("gas_rate", "sum"), total_oil_rate=("oil_rate", "sum"))
+    .reset_index()
+)
 
-for i, area in enumerate(summary_df['areayacimiento'].unique()):
-    area_data = summary_df[summary_df['areayacimiento'] == area]
-    oil_rate_fig.add_trace(
-        go.Scatter(
-            x=area_data['date'],
-            y=area_data['total_oil_rate'],
-            mode='lines',
-            name=f'{area} - Oil Rate',
-            stackgroup='one',  # This line makes it a stacked area plot
+color_palette = px.colors.qualitative.Set3
+
+
+def build_stacked_area(summary: pd.DataFrame, y_col: str, y_label: str, title: str) -> go.Figure:
+    fig = go.Figure()
+    for i, area in enumerate(summary["areayacimiento"].unique()):
+        area_data = summary[summary["areayacimiento"] == area]
+        fig.add_trace(go.Scatter(
+            x=area_data["date"],
+            y=area_data[y_col],
+            mode="lines",
+            name=area,
+            stackgroup="one",
             line=dict(color=color_palette[i % len(color_palette)]),
-            hovertemplate='Fecha: %{x}<br>Caudal de Petróleo: %{y:.2f} m3/d'
-        )
+            hovertemplate=f"Fecha: %{{x}}<br>{y_label}: %{{y:.2f}}",
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title="Fecha",
+        yaxis_title=y_label,
+        hovermode="x unified",
+        legend_title="Área de Yacimiento",
     )
+    return fig
 
-oil_rate_fig.update_layout(
-    title="Producción Total de Petróleo por Área de Yacimiento",
-    xaxis_title="Fecha",
-    yaxis_title="Caudal de Petróleo (m3/d)",
-    hovermode='x unified',
-    legend_title="Área de Yacimiento"
-)
 
-# Display the oil production plot
-st.plotly_chart(oil_rate_fig, use_container_width=True)
+st.plotly_chart(build_stacked_area(
+    summary_df, "total_oil_rate", "Caudal de Petróleo (m3/d)",
+    "Producción Total de Petróleo por Área de Yacimiento",
+), use_container_width=True)
 
-# Plot total gas production by field area over time using stacked area plot
-gas_rate_fig = go.Figure()
+st.plotly_chart(build_stacked_area(
+    summary_df, "total_gas_rate", "Caudal de Gas (km3/d)",
+    "Producción Total de Gas por Área de Yacimiento",
+), use_container_width=True)
 
-for i, area in enumerate(summary_df['areayacimiento'].unique()):
-    area_data = summary_df[summary_df['areayacimiento'] == area]
-    gas_rate_fig.add_trace(
-        go.Scatter(
-            x=area_data['date'],
-            y=area_data['total_gas_rate'],
-            mode='lines',
-            name=f'{area} - Gas Rate',
-            stackgroup='one',  # This line makes it a stacked area plot
-            line=dict(color=color_palette[i % len(color_palette)]),
-            hovertemplate='Fecha: %{x}<br>Caudal de Gas: %{y:.2f} km3/d'
-        )
-    )
 
-gas_rate_fig.update_layout(
-    title="Producción Total de Gas por Área de Yacimiento",
-    xaxis_title="Fecha",
-    yaxis_title="Caudal de Gas (km3/d)",
-    hovermode='x unified',
-    legend_title="Área de Yacimiento"
-)
+# ── Top-10 well filters ───────────────────────────────────────────────────────
 
-# Display the gas production plot
-st.plotly_chart(gas_rate_fig, use_container_width=True)
-
-# Selectbox for areas based on selected company
 selected_area = st.selectbox(
     "Seleccione el área de yacimiento",
-    options=company_data['areayacimiento'].unique()
+    options=sorted(company_data["areayacimiento"].unique()),
 )
 
-# Number input for year selection
-selected_year = st.number_input('Ingrese el año', min_value=int(data_sorted['anio'].min()), max_value=int(data_sorted['anio'].max()), value=int(data_sorted['anio'].max()), step=1)
+selected_year = st.number_input(
+    "Ingrese el año",
+    min_value=int(data_sorted["anio"].min()),
+    max_value=int(data_sorted["anio"].max()),
+    value=int(data_sorted["anio"].max()),
+    step=1,
+)
 
-# Filter data based on selected area and year
-area_year_data = company_data[(company_data['areayacimiento'] == selected_area) & (company_data['anio'] == selected_year)]
+area_year_data = company_data[
+    (company_data["areayacimiento"] == selected_area) &
+    (company_data["anio"] == selected_year)
+]
 
-# Identify top 10 wells for oil and gas based on the highest production rates in the selected year
-top_10_oil_wells = area_year_data.sort_values(by='oil_rate', ascending=False).head(10)['sigla'].unique()
-top_10_gas_wells = area_year_data.sort_values(by='gas_rate', ascending=False).head(10)['sigla'].unique()
+top_10_oil_wells = area_year_data.sort_values("oil_rate", ascending=False).head(10)["sigla"].unique()
+top_10_gas_wells = area_year_data.sort_values("gas_rate", ascending=False).head(10)["sigla"].unique()
 
-# Filter data for the top 10 wells since the beginning of the oldest well
-top_10_oil_data = company_data[company_data['sigla'].isin(top_10_oil_wells)]
-top_10_gas_data = company_data[company_data['sigla'].isin(top_10_gas_wells)]
+top_10_oil_data = company_data[company_data["sigla"].isin(top_10_oil_wells)].copy()
+top_10_gas_data = company_data[company_data["sigla"].isin(top_10_gas_wells)].copy()
 
-# Get the oldest date for the top 10 oil wells
-oldest_oil_date = top_10_oil_data['date'].min()
-top_10_oil_data = top_10_oil_data[top_10_oil_data['date'] >= oldest_oil_date]
 
-# Get the oldest date for the top 10 gas wells
-oldest_gas_date = top_10_gas_data['date'].min()
-top_10_gas_data = top_10_gas_data[top_10_gas_data['date'] >= oldest_gas_date]
+# ── Time-zero normalisation ───────────────────────────────────────────────────
 
-# Plot top 10 wells production profile for oil
-top_oil_fig = go.Figure()
-
-for i, well in enumerate(top_10_oil_wells):
-    well_data = top_10_oil_data[top_10_oil_data['sigla'] == well]
-    top_oil_fig.add_trace(
-        go.Scatter(
-            x=well_data['date'],
-            y=well_data['oil_rate'],
-            mode='lines+markers',
-            name=f'{well} - Oil Rate',
-            line=dict(color=color_palette[i % len(color_palette)]),
-            hovertemplate='Fecha: %{x}<br>Caudal de Petróleo: %{y:.2f} m3/d'
-        )
+def add_time_zero(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds a 'month_number' column counting from the first month where any
+    production (oil or gas) > 0. Month 1 = first producing month.
+    """
+    df = df.copy()
+    first_prod = (
+        df[df[["oil_rate", "gas_rate"]].max(axis=1) > 0]
+        .groupby("sigla")["date"]
+        .min()
+        .rename("first_prod_date")
     )
-
-top_oil_fig.update_layout(
-    title=f"Top 10 Pozos por Perfil de Producción de Petróleo desde {oldest_oil_date.year}",
-    xaxis_title="Fecha",
-    yaxis_title="Caudal de Petróleo (m3/d)",
-    hovermode='x unified',
-    legend_title="Pozos"
-)
-
-# Display the top 10 wells oil production plot
-st.plotly_chart(top_oil_fig, use_container_width=True)
-
-# Plot top 10 wells production profile for gas
-top_gas_fig = go.Figure()
-
-for i, well in enumerate(top_10_gas_wells):
-    well_data = top_10_gas_data[top_10_gas_data['sigla'] == well]
-    top_gas_fig.add_trace(
-        go.Scatter(
-            x=well_data['date'],
-            y=well_data['gas_rate'],
-            mode='lines+markers',
-            name=f'{well} - Gas Rate',
-            line=dict(color=color_palette[i % len(color_palette)]),
-            hovertemplate='Fecha: %{x}<br>Caudal de Gas: %{y:.2f} km3/d'
-        )
+    df = df.merge(first_prod, on="sigla", how="left")
+    df["month_number"] = (
+        (df["date"].dt.year  - df["first_prod_date"].dt.year) * 12 +
+        (df["date"].dt.month - df["first_prod_date"].dt.month) + 1
     )
+    return df[df["month_number"] >= 1]
 
-top_gas_fig.update_layout(
-    title=f"Top 10 Pozos por Perfil de Producción de Gas desde {oldest_gas_date.year}",
-    xaxis_title="Fecha",
-    yaxis_title="Caudal de Gas (km3/d)",
-    hovermode='x unified',
-    legend_title="Pozos"
+
+top_10_oil_data = add_time_zero(top_10_oil_data)
+top_10_gas_data = add_time_zero(top_10_gas_data)
+
+
+# ── Time-axis toggle ──────────────────────────────────────────────────────────
+
+time_axis = st.radio(
+    "Eje temporal",
+    options=["📅 Fecha calendario", "⏱️ Tiempo cero (mes de producción)"],
+    horizontal=True,
+)
+use_time_zero = time_axis == "⏱️ Tiempo cero (mes de producción)"
+
+
+# ── Top-10 well production profiles ──────────────────────────────────────────
+
+def build_top10_chart(
+    well_data: pd.DataFrame,
+    wells: list,
+    y_col: str,
+    y_label: str,
+    title: str,
+    use_time_zero: bool,
+) -> go.Figure:
+    fig     = go.Figure()
+    x_col   = "month_number" if use_time_zero else "date"
+    x_label = "Mes de Producción" if use_time_zero else "Fecha"
+
+    for i, well in enumerate(wells):
+        wd = well_data[well_data["sigla"] == well].sort_values(x_col)
+        fig.add_trace(go.Scatter(
+            x=wd[x_col],
+            y=wd[y_col],
+            mode="lines+markers",
+            name=well,
+            line=dict(color=color_palette[i % len(color_palette)]),
+            hovertemplate=f"{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}",
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=y_label,
+        hovermode="x unified",
+        legend_title="Pozos",
+    )
+    return fig
+
+
+st.plotly_chart(build_top10_chart(
+    top_10_oil_data, top_10_oil_wells,
+    "oil_rate", "Caudal de Petróleo (m3/d)",
+    f"Top 10 Pozos — Perfil de Producción de Petróleo ({selected_area}, {selected_year})",
+    use_time_zero,
+), use_container_width=True)
+
+st.plotly_chart(build_top10_chart(
+    top_10_gas_data, top_10_gas_wells,
+    "gas_rate", "Caudal de Gas (km3/d)",
+    f"Top 10 Pozos — Perfil de Producción de Gas ({selected_area}, {selected_year})",
+    use_time_zero,
+), use_container_width=True)
+
+
+# ── Data table & download ─────────────────────────────────────────────────────
+
+COLUMN_RENAME = {
+    "sigla":          "Sigla",
+    "date":           "Fecha",
+    "oil_rate":       "Caudal de petróleo (m3/d)",
+    "gas_rate":       "Caudal de gas (km3/d)",
+    "water_rate":     "Caudal de agua (m3/d)",
+    "Np":             "Acumulada de Petróleo (m3)",
+    "Gp":             "Acumulada de Gas (m3)",
+    "Wp":             "Acumulada de Agua (m3)",
+    "tef":            "TEF",
+    "tipoextraccion": "Tipo de Extracción",
+    "tipopozo":       "Tipo de Pozo",
+    "empresa":        "Empresa",
+    "formacion":      "Formación",
+    "areayacimiento": "Área yacimiento",
+}
+
+# Download reflects the current top-10 selection (oil + gas wells combined)
+download_data = (
+    pd.concat([top_10_oil_data, top_10_gas_data])
+    .drop_duplicates()
+    .rename(columns=COLUMN_RENAME)
 )
 
-# Display the top 10 wells gas production plot
-st.plotly_chart(top_gas_fig, use_container_width=True)
+st.write(download_data)
+
+st.download_button(
+    label="⬇️ Descargar tabla como CSV",
+    data=download_data.to_csv(index=False).encode("utf-8"),
+    file_name=f"{selected_company}_{selected_area}_{selected_year}_top10.csv",
+    mime="text/csv",
+)
