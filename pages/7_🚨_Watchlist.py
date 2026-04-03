@@ -163,7 +163,7 @@ def main():
         top_gas = latest_data.nlargest(TOP_N_WELLS, "gas_rate")
         top_oil = latest_data.nlargest(TOP_N_WELLS, "oil_rate")
         
-        # Gas ranking
+        # Gas ranking - UNIDADES CORREGIDAS A km3/d
         st.subheader("🔥 Ranking actual: Top 5 pozos de gas más productivos")
         fig_gas = px.bar(
             top_gas.sort_values(by="gas_rate"),
@@ -172,7 +172,7 @@ def main():
             color="empresaNEW",
             orientation="h",
             labels={
-                "gas_rate": "Producción de Gas (m³/día)", 
+                "gas_rate": "Producción de Gas (km³/d)", 
                 "sigla": "Pozo", 
                 "empresaNEW": "Empresa",
                 "areayacimiento": "Bloque"
@@ -198,7 +198,7 @@ def main():
             color="empresaNEW",
             orientation="h",
             labels={
-                "oil_rate": "Producción de Petróleo (m³/día)", 
+                "oil_rate": "Producción de Petróleo (m³/d)", 
                 "sigla": "Pozo", 
                 "empresaNEW": "Empresa",
                 "areayacimiento": "Bloque"
@@ -308,7 +308,7 @@ def main():
             fig_oil_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_oil_5y, use_container_width=True, key="oil_5y")
         
-        # Gas Cumulative Rankings
+        # Gas Cumulative Rankings - UNIDADES CORREGIDAS A km3
         st.markdown("---")
         st.markdown("### 🔥 Gas Acumulado")
         
@@ -318,18 +318,22 @@ def main():
             st.markdown("**@ 180 días**")
             if wells_180d > 0:
                 top_gas_180d = cum_data.nlargest(TOP_N_WELLS, "gas_cum_180d")
+                # Convertir a km3 para visualización
+                top_gas_180d_display = top_gas_180d.copy()
+                top_gas_180d_display["gas_cum_180d_km3"] = top_gas_180d_display["gas_cum_180d"] / 1000
+                
                 fig_gas_180d = px.bar(
-                    top_gas_180d.sort_values(by="gas_cum_180d"),
+                    top_gas_180d_display.sort_values(by="gas_cum_180d_km3"),
                     y="sigla",
-                    x="gas_cum_180d",
+                    x="gas_cum_180d_km3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"gas_cum_180d": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="gas_cum_180d",
+                    labels={"gas_cum_180d_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="gas_cum_180d_km3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_gas_180d.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+                fig_gas_180d.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
                 fig_gas_180d.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_gas_180d, use_container_width=True, key="gas_180d")
             else:
@@ -339,39 +343,47 @@ def main():
             st.markdown("**@ 1 año**")
             if wells_1y > 0:
                 top_gas_1y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_1y")
+                # Convertir a km3 para visualización
+                top_gas_1y_display = top_gas_1y.copy()
+                top_gas_1y_display["gas_cum_1y_km3"] = top_gas_1y_display["gas_cum_1y"] / 1000
+                
                 fig_gas_1y = px.bar(
-                    top_gas_1y.sort_values(by="gas_cum_1y"),
+                    top_gas_1y_display.sort_values(by="gas_cum_1y_km3"),
                     y="sigla",
-                    x="gas_cum_1y",
+                    x="gas_cum_1y_km3",
                     color="empresaNEW",
                     orientation="h",
-                    labels={"gas_cum_1y": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                    text="gas_cum_1y",
+                    labels={"gas_cum_1y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                    text="gas_cum_1y_km3",
                     hover_data=["areayacimiento"],
                     height=350
                 )
-                fig_gas_1y.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+                fig_gas_1y.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
                 fig_gas_1y.update_layout(yaxis_title=None, showlegend=False)
                 st.plotly_chart(fig_gas_1y, use_container_width=True, key="gas_1y")
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years gas
+        # 5 years gas - UNIDADES CORREGIDAS A km3
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_gas_5y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_5y")
+            # Convertir a km3 para visualización
+            top_gas_5y_display = top_gas_5y.copy()
+            top_gas_5y_display["gas_cum_5y_km3"] = top_gas_5y_display["gas_cum_5y"] / 1000
+            
             fig_gas_5y = px.bar(
-                top_gas_5y.sort_values(by="gas_cum_5y"),
+                top_gas_5y_display.sort_values(by="gas_cum_5y_km3"),
                 y="sigla",
-                x="gas_cum_5y",
+                x="gas_cum_5y_km3",
                 color="empresaNEW",
                 orientation="h",
-                labels={"gas_cum_5y": "m³", "sigla": "Pozo", "empresaNEW": "Empresa"},
-                text="gas_cum_5y",
+                labels={"gas_cum_5y_km3": "km³", "sigla": "Pozo", "empresaNEW": "Empresa"},
+                text="gas_cum_5y_km3",
                 hover_data=["areayacimiento"],
                 height=350
             )
-            fig_gas_5y.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+            fig_gas_5y.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
             fig_gas_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_gas_5y, use_container_width=True, key="gas_5y")
         
@@ -384,6 +396,10 @@ def main():
             - @180d: Pozos con al menos 162 días de producción
             - @1año: Pozos con al menos 328 días de producción  
             - @5años: Pozos con al menos 1642 días de producción
+            
+            **Unidades:**
+            - Petróleo: m³ (metros cúbicos)
+            - Gas: km³ (miles de metros cúbicos)
             
             **Interpretación:**
             - **180 días:** Productividad inicial post-frac (temprana)
