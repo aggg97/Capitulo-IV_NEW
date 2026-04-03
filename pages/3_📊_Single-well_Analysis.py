@@ -1,550 +1,339 @@
 """
-Single Well Analysis Page - Enhanced Edition
-============================================
-Interactive production analysis with benchmarking, decline curves,
-cumulative tracking, and fluid ratio analysis.
+Enhanced DCA Module for Unconventional/Shale Wells
+Supports: Modified Hyperbolic, Power-Law Exponential (PLE), Duong
 """
 
-import streamlit as st
-import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from PIL import Image
-from scipy.optimize import curve_fit
-from typing import Optional, Tuple, Dict, List
+from scipy.optimize import curve_fit, minimize
+from typing import Optional, Tuple, Callable
+import streamlit as st
 
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Shale DCA Models ─────────────────────────────────────────────────────────
 
-PLOT_CONFIG = {
-    "gas": {"color": "#FF4B4B", "title": "Gas", "unit": "km³/d", "cumulative": "Gp", "cum_unit": "Mm³"},
-    "oil": {"color": "#00CC96", "title": "Petróleo", "unit": "m³/d", "cumulative": "Np", "cum_unit": "Mm³"},
-    "water": {"color": "#4B9CD3", "title": "Agua", "unit": "m³/d", "cumulative": "Wp", "cum_unit": "Mm³"},
-}
-
-COLUMN_RENAMES = {
-    "sigla": "Sigla",
-    "date": "Fecha",
-    "oil_rate": "Caudal Petróleo (m³/d)",
-    "gas_rate": "Caudal Gas (km³/d)",
-    "water_rate": "Caudal Agua (m³/d)",
-    "Np": "Petroléo Acum (m³)",
-    "Gp": "Gas Acum (m³)",
-    "Wp": "Agua Acum (m³)",
-    "tef": "TEF",
-    "tipopozo": "Tipo Pozo",
-    "empresa": "Empresa",
-    "areayacimiento": "Área Yacimiento",
-    "formprod": "Formación",
-    "sub_tipo_recurso": "Recurso",
-}
-
-MAX_RATE_THRESHOLD = 1_000_000
-MIN_DATA_POINTS = 6  # Minimum points for decline curve fitting
-
-
-# ── Data Preparation ─────────────────────────────────────────────────────────
-
-def get_data_from_session() -> Optional[pd.DataFrame]:
-    """Retrieve and prepare data from session state."""
-    if "df" not in st.session_state:
-        return None
+def modified_hyperbolic(
+    t: np.ndarray, 
+    qi: float, 
+    Di: float, 
+    b: float, 
+    Dmin: float
+) -> np.ndarray:
+    """
+    Modified Hyperbolic: Hyperbolic until D = Dmin, then exponential.
     
-    df = st.session_state["df"].copy()
+    Standard hyperbolic decline rate: D(t) = Di / (1 + b*Di*t)
+    Switch time: t_switch = (Di/Dmin - 1) / (b*Di)
+    """
+    if b == 0:
+        return qi * np.exp(-Di * t)
     
-    # Ensure derived columns exist
-    if "date" not in df.columns:
-        df["date"] = pd.to_datetime(
-            df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1"
-        )
+    # Calculate when decline rate hits Dmin
+    t_switch = (Di / Dmin - 1) / (b * Di) if Dmin < Di else 0
     
-    if "gas_rate" not in df.columns:
-        df["gas_rate"] = df["prod_gas"] / df["tef"]
-    if "oil_rate" not in df.columns:
-        df["oil_rate"] = df["prod_pet"] / df["tef"]
-    if "water_rate" not in df.columns:
-        df["water_rate"] = df["prod_agua"] / df["tef"]
+    result = np.zeros_like(t, dtype=float)
     
-    # Calculate ratios safely
-    df["gor"] = np.where(df["oil_rate"] > 0, df["gas_rate"] / df["oil_rate"], np.nan)
-    df["wor"] = np.where(df["oil_rate"] > 0, df["water_rate"] / df["oil_rate"], np.nan)
-    df["wgr"] = np.where(df["gas_rate"] > 0, df["water_rate"] / df["gas_rate"], np.nan)
+    # Hyperbolic portion (t <= t_switch)
+    hyperbolic_mask = t <= t_switch
+    t_hyp = t[hyperbolic_mask]
+    result[hyperbolic_mask] = qi / np.power(1 + b * Di * t_hyp, 1/b)
     
-    return df.sort_values(by=["sigla", "date"])
+    # Exponential portion (t > t_switch) with rate Dmin
+    exponential_mask = t > t_switch
+    t_exp = t[exponential_mask]
+    if len(t_exp) > 0:
+        q_switch = qi / np.power(1 + b * Di * t_switch, 1/b)
+        result[exponential_mask] = q_switch * np.exp(-Dmin * (t_exp - t_switch))
+    
+    return result
 
 
-def calculate_months_on_production(df: pd.DataFrame) -> pd.DataFrame:
-    """Add normalized time column (months since first production)."""
-    df = df.copy()
-    df["months_on_prod"] = (
-        (df["date"] - df["date"].min()) / np.timedelta64(1, "M")
-    ).round().astype(int) + 1
-    return df
-
-
-def get_benchmark_data(df: pd.DataFrame, well_types: List[str]) -> pd.DataFrame:
-    """Calculate P50 and average curves for all wells of same type."""
-    type_data = df[df["tipopozo"].isin(well_types)].copy()
-    
-    # Normalize time for each well
-    normalized_data = []
-    for well in type_data["sigla"].unique():
-        well_data = type_data[type_data["sigla"] == well].copy()
-        well_data = calculate_months_on_production(well_data)
-        normalized_data.append(well_data)
-    
-    if not normalized_data:
-        return pd.DataFrame()
-    
-    combined = pd.concat(normalized_data)
-    
-    # Calculate statistics by month
-    stats = (
-        combined.groupby("months_on_prod")
-        .agg({
-            "oil_rate": ["mean", "median", "count"],
-            "gas_rate": ["mean", "median", "count"],
-            "water_rate": ["mean", "median"],
-        })
-        .reset_index()
-    )
-    
-    # Flatten column names
-    stats.columns = [
-        "months_on_prod",
-        "oil_mean", "oil_p50", "oil_count",
-        "gas_mean", "gas_p50", "gas_count",
-        "water_mean", "water_p50",
-    ]
-    
-    return stats[stats["oil_count"] >= 3]  # At least 3 wells for statistics
-
-
-# ── Decline Curve Analysis ───────────────────────────────────────────────────
-
-def arps_exponential(t: np.ndarray, qi: float, D: float) -> np.ndarray:
-    """Exponential decline: q(t) = qi * exp(-D*t)"""
-    return qi * np.exp(-D * t)
-
-
-def arps_hyperbolic(t: np.ndarray, qi: float, Di: float, b: float) -> np.ndarray:
-    """Hyperbolic decline: q(t) = qi / (1 + b*Di*t)^(1/b)"""
-    # Avoid division issues
-    with np.errstate(divide='ignore', invalid='ignore'):
-        result = qi / np.power(1 + b * Di * t, 1/b)
+def power_law_exponential(
+    t: np.ndarray, 
+    qi: float, 
+    D: float, 
+    n: float
+) -> np.ndarray:
+    """
+    Power-Law Exponential (PLE): q(t) = qi * exp(-D * t^n)
+    Best for transient flow in shale (0 < n < 1)
+    n ≈ 0.5 often indicates linear flow
+    """
+    with np.errstate(over='ignore'):
+        result = qi * np.exp(-D * np.power(t, n))
     return np.where(np.isfinite(result), result, 0)
 
 
-def fit_decline_curve(time: np.ndarray, rate: np.ndarray, model: str = "exponential"):
-    """Fit decline curve to production data."""
-    if len(time) < MIN_DATA_POINTS or np.all(rate <= 0):
-        return None, None
+def duong_model(
+    t: np.ndarray, 
+    qi: float, 
+    m: float, 
+    a: float
+) -> np.ndarray:
+    """
+    Duong model for shale gas: q(t) = qi * t^(-m) * exp(a/(1-m)*(t^(1-m)-1))
+    where m = 1 - b (decline exponent)
+    Often better than Arps for shale with long linear flow
+    """
+    if m >= 1:
+        m = 0.99
     
-    # Normalize time to start at 0
-    t_normalized = time - time.min()
-    valid_idx = rate > 0
-    t_valid = t_normalized[valid_idx]
-    q_valid = rate[valid_idx]
+    with np.errstate(over='ignore', divide='ignore'):
+        exp_term = np.exp(a / (1 - m) * (np.power(t, 1 - m) - 1))
+        power_term = np.power(t, -m)
+        result = qi * power_term * exp_term
     
-    if len(t_valid) < MIN_DATA_POINTS:
-        return None, None
+    return np.where((np.isfinite(result)) & (result > 0), result, 1e-10)
+
+
+# ── Curve Fitting Functions ──────────────────────────────────────────────────
+
+def fit_shale_decline(
+    time: np.ndarray, 
+    rate: np.ndarray, 
+    model: str = "ple",
+    bounds: Optional[dict] = None
+) -> Tuple[Optional[np.ndarray], Optional[Callable], Optional[float]]:
+    """
+    Fit decline curve model to shale well data.
+    
+    Returns: (parameters, function, EUR_30yr)
+    """
+    if len(time) < 6 or np.all(rate <= 0):
+        return None, None, None
+    
+    t_norm = time - time.min()
+    valid = rate > 0
+    t_valid = t_norm[valid]
+    q_valid = rate[valid]
+    
+    if len(t_valid) < 6:
+        return None, None, None
+    
+    # Initial guesses and bounds
+    qi_init = q_valid[0]
     
     try:
-        if model == "exponential":
-            p0 = [q_valid[0], 0.1]
-            bounds = ([0, 0], [q_valid[0]*10, 5])
-            popt, _ = curve_fit(arps_exponential, t_valid, q_valid, p0=p0, bounds=bounds, maxfev=5000)
-            return popt, lambda t: arps_exponential(t, *popt)
-        else:  # hyperbolic
-            p0 = [q_valid[0], 0.1, 0.5]
-            bounds = ([0, 0, 0.1], [q_valid[0]*10, 5, 2.0])
-            popt, _ = curve_fit(arps_hyperbolic, t_valid, q_valid, p0=p0, bounds=bounds, maxfev=5000)
-            return popt, lambda t: arps_hyperbolic(t, *popt)
-    except (RuntimeError, ValueError):
-        return None, None
-
-
-# ── UI Components ─────────────────────────────────────────────────────────────
-
-def render_sidebar(df: pd.DataFrame) -> Tuple[List[str], str, str]:
-    """Render sidebar filters."""
-    st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-    st.sidebar.title("Filtros")
-    
-    well_types = sorted(df["tipopozo"].unique())
-    selected_types = st.sidebar.multiselect(
-        "Tipo de pozo:",
-        options=well_types,
-        default=well_types[:1] if well_types else None,
-    )
-    
-    companies = sorted(df["empresa"].unique())
-    selected_company = st.sidebar.selectbox("Operadora:", options=companies)
-    
-    available_wells = df[
-        (df["tipopozo"].isin(selected_types)) & 
-        (df["empresa"] == selected_company)
-    ]["sigla"].unique()
-    
-    selected_well = st.sidebar.selectbox(
-        "Sigla del pozo:",
-        options=sorted(available_wells),
-        disabled=len(available_wells) == 0,
-    )
-    
-    return selected_types, selected_company, selected_well
-
-
-def render_metrics(well_data: pd.DataFrame):
-    """Display production metrics."""
-    max_rates = {}
-    for fluid in ["oil", "gas", "water"]:
-        rate_col = f"{fluid}_rate"
-        valid_data = well_data[well_data[rate_col] <= MAX_RATE_THRESHOLD][rate_col]
-        max_rates[fluid] = valid_data.max() if not valid_data.empty else 0
-    
-    latest_gor = well_data["gor"].iloc[-1] if not well_data.empty and pd.notna(well_data["gor"].iloc[-1]) else 0
-    latest_wor = well_data["wor"].iloc[-1] if not well_data.empty and pd.notna(well_data["wor"].iloc[-1]) else 0
-    
-    cols = st.columns(5)
-    metrics = [
-        (":green[Petróleo Max]", max_rates["oil"], "m³/d"),
-        (":red[Gas Max]", max_rates["gas"], "km³/d"),
-        (":blue[Agua Max]", max_rates["water"], "m³/d"),
-        (":orange[GOR Actual]", latest_gor, "km³/m³"),
-        (":violet[WOR Actual]", latest_wor, "m³/m³"),
-    ]
-    
-    for col, (label, value, unit) in zip(cols, metrics):
-        display_val = f"{value:,.1f}" if pd.notna(value) and value > 0 else "N/A"
-        col.metric(label=label, value=f"{display_val} {unit}")
-
-
-# ── Plotting Functions ───────────────────────────────────────────────────────
-
-def create_rate_plot_with_benchmark(
-    well_data: pd.DataFrame, 
-    benchmark: pd.DataFrame, 
-    fluid: str, 
-    well_name: str
-) -> go.Figure:
-    """Create production rate plot with benchmark overlay."""
-    config = PLOT_CONFIG[fluid]
-    fig = go.Figure()
-    
-    # Selected well data
-    well_data_norm = calculate_months_on_production(well_data)
-    
-    fig.add_trace(go.Scatter(
-        x=well_data_norm["months_on_prod"],
-        y=well_data_norm[f"{fluid}_rate"],
-        mode="lines+markers",
-        name=f"{well_name}",
-        line=dict(color=config["color"], width=3),
-        marker=dict(size=6),
-    ))
-    
-    # Benchmark data if available
-    if not benchmark.empty and f"{fluid}_mean" in benchmark.columns:
-        fig.add_trace(go.Scatter(
-            x=benchmark["months_on_prod"],
-            y=benchmark[f"{fluid}_mean"],
-            mode="lines",
-            name=f"Promedio {config['title']}",
-            line=dict(color="gray", width=2, dash="dash"),
-            opacity=0.7,
-        ))
+        if model == "modified_hyperbolic":
+            # params: [qi, Di, b, Dmin]
+            p0 = [qi_init, 0.5, 1.0, 0.05]
+            bounds = ([qi_init * 0.1, 0.01, 0.1, 0.001], [qi_init * 3, 10, 2.0, 0.5])
+            
+            popt, _ = curve_fit(
+                lambda t, qi, Di, b, Dmin: modified_hyperbolic(t, qi, Di, b, Dmin),
+                t_valid, q_valid, p0=p0, bounds=bounds, maxfev=10000
+            )
+            func = lambda t: modified_hyperbolic(t, *popt)
+            
+        elif model == "ple":
+            # params: [qi, D, n]
+            p0 = [qi_init, 0.1, 0.5]
+            bounds = ([qi_init * 0.1, 0.001, 0.1], [qi_init * 3, 5, 1.0])
+            
+            popt, _ = curve_fit(
+                power_law_exponential, t_valid, q_valid, 
+                p0=p0, bounds=bounds, maxfev=10000
+            )
+            func = lambda t: power_law_exponential(t, *popt)
+            
+        elif model == "duong":
+            # params: [qi, m, a]
+            p0 = [qi_init, 0.8, 2.0]
+            bounds = ([qi_init * 0.1, 0.1, 0.1], [qi_init * 3, 0.99, 10.0])
+            
+            popt, _ = curve_fit(
+                duong_model, t_valid, q_valid, 
+                p0=p0, bounds=bounds, maxfev=10000
+            )
+            func = lambda t: duong_model(t, *popt)
         
-        fig.add_trace(go.Scatter(
-            x=benchmark["months_on_prod"],
-            y=benchmark[f"{fluid}_p50"],
-            mode="lines",
-            name=f"P50 {config['title']}",
-            line=dict(color="orange", width=2, dash="dot"),
-            opacity=0.7,
-        ))
-    
-    fig.update_layout(
-        title=f"Caudal de {config['title']} vs Benchmark",
-        xaxis_title="Meses en Producción",
-        yaxis_title=f"Caudal ({config['unit']})",
-        yaxis=dict(rangemode="tozero"),
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    
-    return fig
+        else:
+            return None, None, None
+            
+        # Calculate 30-year EUR (monthly steps)
+        t_30yr = np.arange(0, 30*12, 1)  # Monthly for 30 years
+        q_forecast = func(t_30yr)
+        # Trapezoidal integration
+        eur = np.trapz(q_forecast, t_30yr) / 1_000  # Convert to appropriate units
+        
+        return popt, func, eur
+        
+    except (RuntimeError, ValueError, Warning):
+        return None, None, None
 
 
-def create_cumulative_plot(well_data: pd.DataFrame, fluid: str) -> go.Figure:
-    """Create cumulative production plot."""
-    config = PLOT_CONFIG[fluid]
-    cum_col = config["cumulative"]
-    
-    if cum_col not in well_data.columns:
-        return go.Figure()
-    
-    fig = go.Figure()
-    
-    # Convert to millions for readability
-    cum_values = well_data[cum_col] / 1_000_000
-    
-    fig.add_trace(go.Scatter(
-        x=well_data["date"],
-        y=cum_values,
-        mode="lines+markers",
-        fill="tozeroy",
-        line=dict(color=config["color"]),
-        name=f"{config['title']} Acumulado",
-    ))
-    
-    fig.update_layout(
-        title=f"Producción Acumulada de {config['title']}",
-        xaxis_title="Fecha",
-        yaxis_title=f"Volumen Acumulado ({config['cum_unit']})",
-        hovermode="x unified",
-    )
-    
-    return fig
+# ── Visualization Component ───────────────────────────────────────────────────
 
-
-def create_ratio_plot(well_data: pd.DataFrame) -> go.Figure:
-    """Create GOR and WOR trend plot."""
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=("Gas-Oil Ratio (GOR)", "Water-Oil Ratio (WOR)"),
-        vertical_spacing=0.12,
-    )
+def create_shale_dca_plot(
+    well_data: pd.DataFrame, 
+    fluid: str, 
+    selected_well: str
+) -> Tuple[go.Figure, dict]:
+    """Create interactive DCA plot with shale-specific models."""
+    config = {
+        "oil": {"color": "#00CC96", "title": "Petróleo", "unit": "m³/d"},
+        "gas": {"color": "#FF4B4B", "title": "Gas", "unit": "km³/d"}
+    }[fluid]
     
-    # GOR plot
-    fig.add_trace(
-        go.Scatter(
-            x=well_data["date"],
-            y=well_data["gor"],
-            mode="lines+markers",
-            line=dict(color="orange", width=2),
-            name="GOR",
-        ),
-        row=1, col=1,
-    )
-    
-    # WOR plot
-    fig.add_trace(
-        go.Scatter(
-            x=well_data["date"],
-            y=well_data["wor"],
-            mode="lines+markers",
-            line=dict(color="purple", width=2),
-            name="WOR",
-        ),
-        row=2, col=1,
-    )
-    
-    fig.update_xaxes(title_text="Fecha", row=2, col=1)
-    fig.update_yaxes(title_text="GOR (km³/m³)", row=1, col=1)
-    fig.update_yaxes(title_text="WOR (m³/m³)", row=2, col=1)
-    
-    fig.update_layout(height=600, showlegend=False, hovermode="x unified")
-    
-    return fig
-
-
-def create_decline_analysis_plot(well_data: pd.DataFrame, fluid: str) -> Tuple[go.Figure, Dict]:
-    """Create decline curve analysis with forecast."""
-    config = PLOT_CONFIG[fluid]
     rate_col = f"{fluid}_rate"
     
-    fig = go.Figure()
+    # Prepare data
     well_norm = calculate_months_on_production(well_data)
-    
     months = well_norm["months_on_prod"].values
     rates = well_norm[rate_col].values
     
-    # Historical data
+    fig = go.Figure()
+    
+    # Historical production
     fig.add_trace(go.Scatter(
-        x=months,
-        y=rates,
+        x=months, y=rates,
         mode="markers",
         name="Datos Históricos",
-        marker=dict(color=config["color"], size=8),
+        marker=dict(color="black", size=8, opacity=0.7),
     ))
     
-    results = {"fluid": fluid, "model": None, "params": None, "euro": 0}
+    results = {
+        "fluid": fluid,
+        "models": {},
+        "best_model": None,
+        "best_r2": -np.inf
+    }
     
-    if len(months) >= MIN_DATA_POINTS:
-        # Fit both models
-        for model_name, model_label, color in [("exponential", "Exp", "red"), ("hyperbolic", "Hyp", "blue")]:
-            params, func = fit_decline_curve(months, rates, model_name)
+    # Fit all three models
+    forecast_months = np.linspace(months.min(), max(months.max() + 60, 120), 200)
+    
+    model_configs = [
+        ("ple", "Power-Law Exponential", "blue", "solid"),
+        ("modified_hyperbolic", "Modified Hyperbolic", "red", "dash"),
+        ("duong", "Duong", "purple", "dot")
+    ]
+    
+    for model_key, model_name, color, dash in model_configs:
+        params, func, eur = fit_shale_decline(months, rates, model=model_key)
+        
+        if func is not None:
+            # Calculate R²
+            q_pred = func(months - months.min())
+            ss_res = np.sum((rates - q_pred) ** 2)
+            ss_tot = np.sum((rates - np.mean(rates)) ** 2)
+            r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
             
-            if func is not None:
-                # Generate smooth curve
-                t_smooth = np.linspace(months.min(), months.max() + 24, 200)  # Extend 24 months for forecast
-                q_smooth = func(t_smooth - months.min())  # Normalize to start at 0
-                
-                fig.add_trace(go.Scatter(
-                    x=t_smooth,
-                    y=q_smooth,
-                    mode="lines",
-                    name=f"Ajuste {model_label}",
-                    line=dict(color=color, dash="dash" if model_name == "exponential" else "dot"),
-                ))
-                
-                if results["model"] is None:  # Store first successful fit
-                    results["model"] = model_name
-                    results["params"] = params
-                    # Calculate EUR (Estimated Ultimate Recovery) - simplified
-                    if model_name == "exponential" and len(params) == 2:
-                        qi, D = params
-                        # EUR = qi/D for exponential (theoretical infinite time)
-                        results["euro"] = qi / D if D > 0 else 0
+            results["models"][model_key] = {
+                "params": params,
+                "r2": r2,
+                "eur_30yr": eur,
+                "name": model_name
+            }
+            
+            if r2 > results["best_r2"]:
+                results["best_r2"] = r2
+                results["best_model"] = model_key
+            
+            # Plot forecast
+            q_forecast = func(forecast_months)
+            
+            fig.add_trace(go.Scatter(
+                x=forecast_months, y=q_forecast,
+                mode="lines",
+                name=f"{model_name} (R²={r2:.3f})",
+                line=dict(color=color, dash=dash, width=2),
+                opacity=0.8,
+            ))
+    
+    # Highlight best model
+    if results["best_model"]:
+        best_config = next(c for c in model_configs if c[0] == results["best_model"])
+        fig.add_annotation(
+            x=0.02, y=0.98,
+            xref="paper", yref="paper",
+            text=f"🏆 Mejor ajuste: {results['models'][results['best_model']]['name']}",
+            showarrow=False,
+            font=dict(size=12, color=best_config[2]),
+            bgcolor="white", opacity=0.8,
+            align="left", valign="top"
+        )
     
     fig.update_layout(
-        title=f"Análisis de Declinación - {config['title']}",
+        title=f"Análisis de Declinación Shale - {config['title']} ({selected_well})",
         xaxis_title="Meses en Producción",
         yaxis_title=f"Caudal ({config['unit']})",
-        yaxis=dict(type="log" if st.session_state.get("log_scale_decline", False) else "linear"),
+        yaxis_type="log" if st.session_state.get("log_scale_dca", True) else "linear",
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=500,
     )
+    
+    # Add vertical line at end of history
+    fig.add_vline(x=months.max(), line_dash="dash", line_color="gray", opacity=0.5,
+                  annotation_text="Fin de Historia", annotation_position="top")
     
     return fig, results
 
 
-# ── Main Application ─────────────────────────────────────────────────────────
-
-def main():
-    st.title(":blue[Análisis Avanzado de Pozo Individual]")
-    st.caption("Capítulo IV - Producción No Convencional | Benchmarking & Declinación")
+def render_dca_details(results: dict):
+    """Render detailed DCA results in Streamlit."""
+    if not results["models"]:
+        st.warning("No se pudieron ajustar los modelos. Datos insuficientes.")
+        return
     
-    df = get_data_from_session()
-    if df is None:
-        st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la **Página Principal**.")
-        st.stop()
+    st.subheader("📊 Resultados del Ajuste")
     
-    st.success("✅ Datos cargados desde memoria")
-    
-    # Filters
-    selected_types, selected_company, selected_well = render_sidebar(df)
-    
-    if not selected_well:
-        st.error("Selecciona un pozo válido.")
-        st.stop()
-    
-    # Data preparation
-    well_data = df[
-        (df["empresa"] == selected_company) & 
-        (df["sigla"] == selected_well)
-    ].copy()
-    
-    if well_data.empty:
-        st.error(f"No se encontraron datos para {selected_well}")
-        st.stop()
-    
-    well_data = calculate_months_on_production(well_data)
-    benchmark_data = get_benchmark_data(df, selected_types)
-    
-    # Header and metrics
-    st.header(selected_well)
-    st.write(f"**Tipo:** {well_data['tipopozo'].iloc[0]} | **Área:** {well_data['areayacimiento'].iloc[0]} | **Formación:** {well_data['formprod'].iloc[0]}")
-    render_metrics(well_data)
-    
-    # Tabs for different analyses
-    tab_rates, tab_cumul, tab_ratios, tab_decline = st.tabs([
-        "📈 Producción vs Benchmark", 
-        "📊 Acumuladas", 
-        "⚗️ Relaciones de Fluidos", 
-        "📉 Análisis de Declinación"
-    ])
-    
-    # Tab 1: Rates with Benchmark
-    with tab_rates:
-        st.subheader("Comparación con Pozos Similares")
-        st.caption("Línea sólida: Pozo seleccionado | Línea gris: Promedio | Línea naranja: P50 (mediana)")
-        
-        for fluid in ["oil", "gas", "water"]:
-            st.plotly_chart(
-                create_rate_plot_with_benchmark(well_data, benchmark_data, fluid, selected_well),
-                use_container_width=True,
-            )
-    
-    # Tab 2: Cumulative Production
-    with tab_cumul:
-        st.subheader("Producción Acumulada vs Tiempo")
-        cols = st.columns(3)
-        for idx, fluid in enumerate(["oil", "gas", "water"]):
-            with cols[idx]:
-                cum_col = PLOT_CONFIG[fluid]["cumulative"]
-                if cum_col in well_data.columns:
-                    total = well_data[cum_col].iloc[-1] / 1_000_000
-                    st.metric(
-                        label=f"Total {PLOT_CONFIG[fluid]['title']}", 
-                        value=f"{total:,.1f} {PLOT_CONFIG[fluid]['cum_unit']}"
-                    )
-        
-        for fluid in ["oil", "gas", "water"]:
-            st.plotly_chart(create_cumulative_plot(well_data, fluid), use_container_width=True)
-    
-    # Tab 3: Ratios (GOR/WOR)
-    with tab_ratios:
-        st.subheader("Tendencias de Relaciones de Fluidos")
-        col1, col2 = st.columns(2)
-        with col1:
-            avg_gor = well_data["gor"].mean()
-            st.metric("GOR Promedio", f"{avg_gor:.1f} km³/m³" if pd.notna(avg_gor) else "N/A")
-        with col2:
-            avg_wor = well_data["wor"].mean()
-            st.metric("WOR Promedio", f"{avg_wor:.2f} m³/m³" if pd.notna(avg_wor) else "N/A")
-        
-        st.plotly_chart(create_ratio_plot(well_data), use_container_width=True)
-        
-        # Add interpretation
-        with st.expander("ℹ️ Interpretación de Relaciones"):
-            st.markdown("""
-            - **GOR (Gas-Oil Ratio)**: Incrementos indican posible caída de presión o conificación de gas
-            - **WOR (Water-Oil Ratio)**: Incrementos sugieren breakthrough de agua o conificación
-            - **Tendencia estable**: Comportamiento de drenaje uniforme
-            """)
-    
-    # Tab 4: Decline Curve Analysis
-    with tab_decline:
-        st.subheader("Curvas de Declinación (Arps)")
-        st.session_state["log_scale_decline"] = st.checkbox("Escala Logarítmica", value=False)
-        
-        decline_results = {}
-        for fluid in ["oil", "gas"]:
-            fig, results = create_decline_analysis_plot(well_data, fluid)
-            st.plotly_chart(fig, use_container_width=True)
-            decline_results[fluid] = results
+    cols = st.columns(len(results["models"]))
+    for idx, (model_key, data) in enumerate(results["models"].items()):
+        with cols[idx]:
+            is_best = model_key == results["best_model"]
+            border = "2px solid gold" if is_best else "1px solid gray"
             
-            if results["model"]:
-                with st.expander(f"📋 Detalles del Ajuste - {PLOT_CONFIG[fluid]['title']}"):
-                    cols = st.columns(3)
-                    with cols[0]:
-                        st.write(f"**Modelo:** {results['model'].title()}")
-                    with cols[1]:
-                        if results["params"]:
-                            st.write(f"**qi:** {results['params'][0]:.2f}")
-                    with cols[2]:
-                        if len(results["params"]) > 1:
-                            st.write(f"**Di:** {results['params'][1]:.4f}")
-                        if len(results["params"]) > 2:
-                            st.write(f"**b:** {results['params'][2]:.3f}")
+            st.markdown(f"""
+            <div style="border: {border}; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                <h4>{'🏆 ' if is_best else ''}{data['name']}</h4>
+                <p><b>R²:</b> {data['r2']:.4f}</p>
+                <p><b>EUR (30a):</b> {data['eur_30yr']:,.0f} units</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Parameter details
+            params = data["params"]
+            if model_key == "ple" and len(params) == 3:
+                st.caption(f"qi={params[0]:.1f}, D={params[1]:.3f}, n={params[2]:.3f}")
+            elif model_key == "modified_hyperbolic" and len(params) == 4:
+                st.caption(f"qi={params[0]:.1f}, Di={params[1]:.3f}, b={params[2]:.2f}, Dmin={params[3]:.4f}")
+            elif model_key == "duong" and len(params) == 3:
+                st.caption(f"qi={params[0]:.1f}, m={params[1]:.3f}, a={params[2]:.3f}")
+
+
+# ── Integration with Main App ────────────────────────────────────────────────
+
+# In your main() function, replace the decline tab with:
+
+with tab_decline:
+    st.subheader("Análisis de Declinación para Shale/Tight")
+    st.caption("""
+    Modelos implementados:
+    - **Power-Law Exponential (PLE)**: Mejor para flujo transitorio prolongado
+    - **Modified Hyperbolic**: Transición de hiperbólica a exponencial (Dmin)
+    - **Duong**: Especializado en pozos fracturados con flujo lineal largo
+    """)
     
-    # Data Export Section
-    st.divider()
-    with st.expander("📥 Ver Datos Completos y Descargar"):
-        display_df = well_data.rename(columns=COLUMN_RENAMES)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.session_state["log_scale_dca"] = st.toggle("Escala Logarítmica (recomendado)", value=True)
+    
+    for fluid in ["oil", "gas"]:
+        st.markdown(f"### {PLOT_CONFIG[fluid]['title']}")
+        fig, results = create_shale_dca_plot(well_data, fluid, selected_well)
+        st.plotly_chart(fig, use_container_width=True)
+        render_dca_details(results)
         
-        csv = display_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Descargar CSV",
-            data=csv,
-            file_name=f"{selected_well}_analysis.csv",
-            mime="text/csv",
-        )
-
-
-if __name__ == "__main__":
-    main()
+        with st.expander("ℹ️ Interpretación para Shale"):
+            st.markdown("""
+            **Power-Law Exponential (PLE)**:
+            - n ≈ 0.5 indica flujo lineal (típico en shale)
+            - n ≈ 1.0 indica flujo radial/boundary-dominated
+            - Mejor para pozos con < 2-3 años de historia
+            
+            **Modified Hyperbolic**:
+            - Dmin típico: 5-10% anual para shale oil
+            - Switch time indica cuándo alcanza declinación terminal
+            
+            **Duong**:
+            - Parámetro 'm' relacionado con geometría de fractura
+            - Popular en shale gas (Marcellus, Eagle Ford)
+            """)
