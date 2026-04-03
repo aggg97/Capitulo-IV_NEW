@@ -431,9 +431,6 @@ def main():
             - @1año: TEF acumulado ≥ 365 días
             - @5años: TEF acumulado ≥ 1,825 días
             
-            **Unidades de Visualización:**
-            - Petróleo: **km³** (miles de m³) = m³ ÷ 1,000
-            - Gas: **MMm³** (millones de m³) = km³ ÷ 1,000
             
             **Nota:** Si hay pocos pozos con 5 años, es porque la mayoría de los pozos en Vaca Muerta 
             son relativamente nuevos (boom de perforación reciente).
