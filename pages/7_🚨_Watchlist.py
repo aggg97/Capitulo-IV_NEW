@@ -81,7 +81,7 @@ def calculate_cumulative_at_interval(df, interval_days):
         .agg({
             "prod_pet": "sum",
             "prod_gas": "sum",
-            "tef": "sum",  # Total days online (cumulative TEF)
+            "tef": "sum",
             "empresa": "first",
             "areayacimiento": "first",
             "formprod": "first",
@@ -245,7 +245,6 @@ def main():
         
         # Debug info
         with st.expander("🔍 Diagnóstico: Distribución de días de producción"):
-            # Show distribution of total production days across all wells
             all_wells = df.groupby("sigla")["tef"].sum().reset_index()
             all_wells.columns = ["sigla", "total_tef"]
             
@@ -266,7 +265,7 @@ def main():
             st.write(f"**Pozos con ≥1 año:** {(all_wells['total_tef'] >= 365).sum()}")
             st.write(f"**Pozos con ≥5 años:** {(all_wells['total_tef'] >= 1825).sum()}")
         
-        # Oil Cumulative Rankings - EN km3
+        # Oil Cumulative Rankings - EN km3 (miles de m3)
         st.markdown("---")
         st.markdown("### ⛽ Petróleo Acumulado (km³)")
         
@@ -342,7 +341,8 @@ def main():
             fig_oil_5y.update_layout(yaxis_title=None, showlegend=False)
             st.plotly_chart(fig_oil_5y, use_container_width=True, key="oil_5y")
         
-        # Gas Cumulative Rankings - EN MMm3
+        # Gas Cumulative Rankings - EN MMm3 (millones de m3)
+        # CORRECCIÓN: Si el gas viene en km3 (miles de m3), dividir por 1000 para obtener MMm3
         st.markdown("---")
         st.markdown("### 🔥 Gas Acumulado (MMm³)")
         
@@ -353,7 +353,8 @@ def main():
             if wells_180d > 0:
                 top_gas_180d = cum_data.nlargest(TOP_N_WELLS, "gas_cum_180d")
                 top_gas_180d_display = top_gas_180d.copy()
-                top_gas_180d_display["gas_cum_180d_MMm3"] = top_gas_180d_display["gas_cum_180d"] / 1_000_000
+                # CORREGIDO: km3 / 1000 = MMm3
+                top_gas_180d_display["gas_cum_180d_MMm3"] = top_gas_180d_display["gas_cum_180d"] / 1000
                 
                 fig_gas_180d = px.bar(
                     top_gas_180d_display.sort_values(by="gas_cum_180d_MMm3"),
@@ -377,7 +378,8 @@ def main():
             if wells_1y > 0:
                 top_gas_1y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_1y")
                 top_gas_1y_display = top_gas_1y.copy()
-                top_gas_1y_display["gas_cum_1y_MMm3"] = top_gas_1y_display["gas_cum_1y"] / 1_000_000
+                # CORREGIDO: km3 / 1000 = MMm3
+                top_gas_1y_display["gas_cum_1y_MMm3"] = top_gas_1y_display["gas_cum_1y"] / 1000
                 
                 fig_gas_1y = px.bar(
                     top_gas_1y_display.sort_values(by="gas_cum_1y_MMm3"),
@@ -396,12 +398,13 @@ def main():
             else:
                 st.info("No hay suficientes datos")
         
-        # 5 years gas
+        # 5 years gas - CORREGIDO
         if wells_5y > 0:
             st.markdown("**@ 5 años**")
             top_gas_5y = cum_data.nlargest(TOP_N_WELLS, "gas_cum_5y")
             top_gas_5y_display = top_gas_5y.copy()
-            top_gas_5y_display["gas_cum_5y_MMm3"] = top_gas_5y_display["gas_cum_5y"] / 1_000_000
+            # CORREGIDO: km3 / 1000 = MMm3
+            top_gas_5y_display["gas_cum_5y_MMm3"] = top_gas_5y_display["gas_cum_5y"] / 1000
             
             fig_gas_5y = px.bar(
                 top_gas_5y_display.sort_values(by="gas_cum_5y_MMm3"),
@@ -429,13 +432,12 @@ def main():
             - @5años: TEF acumulado ≥ 1,825 días
             
             **Unidades de Visualización:**
-            - Petróleo: **km³** (miles de m³)
-            - Gas: **MMm³** (millones de m³)
+            - Petróleo: **km³** (miles de m³) = m³ ÷ 1,000
+            - Gas: **MMm³** (millones de m³) = km³ ÷ 1,000
             
             **Nota:** Si hay pocos pozos con 5 años, es porque la mayoría de los pozos en Vaca Muerta 
             son relativamente nuevos (boom de perforación reciente).
             """)
-    st.write("Hola")
 
 
 if __name__ == "__main__":
