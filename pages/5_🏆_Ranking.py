@@ -1538,3 +1538,5 @@ for _, row in top3_gas_emp.iterrows():
 st.write("**Top 3 Empresas con Mayores Caudales Pico de Gas por Etapa por Pozo**")
 st.dataframe(pd.DataFrame(data_gas_final), use_container_width=True, hide_index=True)
 
+
+
