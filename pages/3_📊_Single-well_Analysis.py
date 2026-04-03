@@ -1,8 +1,8 @@
 """
-Single Well Analysis Page - Production Ready
-============================================
-Interactive production analysis with shale-optimized DCA.
-Fixed: Duong boundary condition, Modified Hyperbolic switching logic, type safety.
+Single Well Analysis Page
+=========================
+Interactive production analysis for individual wells.
+Data is shared from the main page via session state.
 """
 
 import streamlit as st
@@ -11,8 +11,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from PIL import Image
-from scipy.optimize import curve_fit
-from typing import Optional, Tuple, Callable, Dict, List
+from typing import Optional, Tuple, Dict, List
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -41,8 +40,6 @@ COLUMN_RENAMES = {
 }
 
 MAX_RATE_THRESHOLD = 1_000_000
-MIN_DATA_POINTS = 6
-FORECAST_YEARS = 30
 
 
 # ── Data Preparation ─────────────────────────────────────────────────────────
@@ -68,7 +65,6 @@ def get_data_from_session() -> Optional[pd.DataFrame]:
     # Calculate ratios safely
     df["gor"] = np.where(df["oil_rate"] > 0, df["gas_rate"] / df["oil_rate"], np.nan)
     df["wor"] = np.where(df["oil_rate"] > 0, df["water_rate"] / df["oil_rate"], np.nan)
-    df["wgr"] = np.where(df["gas_rate"] > 0, df["water_rate"] / df["gas_rate"], np.nan)
     
     return df.sort_values(by=["sigla", "date"])
 
@@ -120,189 +116,6 @@ def get_benchmark_data(df: pd.DataFrame, well_types: List[str]) -> pd.DataFrame:
     ]
     
     return stats[stats["oil_count"] >= 3]
-
-
-# ── Shale DCA Models (Fixed) ─────────────────────────────────────────────────
-
-def modified_hyperbolic(
-    t: np.ndarray, 
-    qi: float, 
-    Di: float, 
-    b: float, 
-    Dmin: float
-) -> np.ndarray:
-    """
-    Modified Hyperbolic: Hyperbolic until D <= Dmin, then exponential at Dmin.
-    Fixed: Handles edge cases where Dmin >= Di.
-    """
-    # Input validation
-    b = max(b, 0.01)  # Avoid division by zero
-    Di = max(Di, 1e-6)
-    Dmin = max(Dmin, 1e-6)
-    qi = max(qi, 0)
-    
-    # If Dmin >= Di, pure exponential from start
-    if Dmin >= Di:
-        return qi * np.exp(-Di * t)
-    
-    # Switch time: when hyperbolic decline rate hits Dmin
-    # D(t) = Di / (1 + b*Di*t) = Dmin  =>  t_switch = (Di/Dmin - 1)/(b*Di)
-    t_switch = (Di / Dmin - 1) / (b * Di)
-    
-    result = np.zeros_like(t, dtype=float)
-    
-    # Hyperbolic portion (t <= t_switch)
-    mask_hyp = (t <= t_switch) & (t >= 0)
-    if np.any(mask_hyp):
-        t_hyp = t[mask_hyp]
-        result[mask_hyp] = qi / np.power(1 + b * Di * t_hyp, 1/b)
-    
-    # Exponential portion (t > t_switch)
-    mask_exp = t > t_switch
-    if np.any(mask_exp):
-        q_switch = qi / np.power(1 + b * Di * t_switch, 1/b)
-        t_exp = t[mask_exp]
-        result[mask_exp] = q_switch * np.exp(-Dmin * (t_exp - t_switch))
-    
-    # Handle negative times (shouldn't happen but safety first)
-    result[t < 0] = qi
-    
-    return np.maximum(result, 0)  # Ensure non-negative
-
-
-def power_law_exponential(
-    t: np.ndarray, 
-    qi: float, 
-    D: float, 
-    n: float
-) -> np.ndarray:
-    """
-    Power-Law Exponential (PLE): q(t) = qi * exp(-D * t^n)
-    Fixed: Handles t=0 correctly (0^n = 0, exp(0) = 1, so q(0) = qi).
-    """
-    qi = max(qi, 0)
-    D = max(D, 0)
-    n = np.clip(n, 0.01, 1.0)  # Constrain to valid shale range
-    
-    # Ensure t is non-negative
-    t = np.maximum(t, 0)
-    
-    with np.errstate(over='ignore', under='ignore'):
-        result = qi * np.exp(-D * np.power(t, n))
-    
-    return np.where(np.isfinite(result), result, 0)
-
-
-def duong_model(
-    t: np.ndarray, 
-    qi: float, 
-    m: float, 
-    a: float
-) -> np.ndarray:
-    """
-    Duong model: q(t) = qi * t^(-m) * exp(a*(t^(1-m) - 1)/(1-m))
-    Fixed: Handles t=0 by starting at t=1 (first month).
-    """
-    qi = max(qi, 0)
-    m = np.clip(m, 0.01, 0.99)  # Ensure 0 < m < 1
-    a = max(a, 0.01)
-    
-    # Shift time to avoid t=0 singularity (start at month 1)
-    t_adj = np.maximum(t, 1.0)
-    
-    with np.errstate(over='ignore', under='ignore', divide='ignore'):
-        power_term = np.power(t_adj, -m)
-        exp_exponent = a * (np.power(t_adj, 1 - m) - 1) / (1 - m)
-        exp_term = np.exp(exp_exponent)
-        result = qi * power_term * exp_term
-    
-    # Ensure finite and non-negative
-    result = np.where(np.isfinite(result) & (result > 0), result, 1e-10)
-    
-    # For t=0 (original), set to initial production approximation
-    result[t <= 0] = qi
-    
-    return result
-
-
-def fit_shale_decline(
-    time: np.ndarray, 
-    rate: np.ndarray, 
-    model: str = "ple"
-) -> Tuple[Optional[np.ndarray], Optional[Callable], Optional[float]]:
-    """
-    Fit decline curve model to shale well data.
-    Returns: (parameters, function, EUR_30yr)
-    """
-    if len(time) < MIN_DATA_POINTS or np.all(rate <= 0):
-        return None, None, None
-    
-    # Normalize time to start at 0
-    t_norm = time - time.min()
-    valid = rate > 0
-    t_valid = t_norm[valid]
-    q_valid = rate[valid]
-    
-    if len(t_valid) < MIN_DATA_POINTS:
-        return None, None, None
-    
-    qi_init = q_valid[0]
-    if qi_init <= 0:
-        qi_init = np.median(q_valid[:3])  # Use median of first 3 points
-    
-    try:
-        if model == "modified_hyperbolic":
-            p0 = [qi_init, 0.5, 1.0, 0.05]
-            bounds = ([qi_init * 0.05, 0.001, 0.1, 0.0001], 
-                     [qi_init * 5, 20.0, 2.0, 1.0])
-            
-            popt, _ = curve_fit(
-                modified_hyperbolic, t_valid, q_valid, 
-                p0=p0, bounds=bounds, maxfev=15000, method='trf'
-            )
-            func = lambda t: modified_hyperbolic(t, *popt)
-            
-        elif model == "ple":
-            p0 = [qi_init, 0.1, 0.5]
-            bounds = ([qi_init * 0.05, 0.0001, 0.05], 
-                     [qi_init * 5, 10.0, 1.0])
-            
-            popt, _ = curve_fit(
-                power_law_exponential, t_valid, q_valid, 
-                p0=p0, bounds=bounds, maxfev=15000, method='trf'
-            )
-            func = lambda t: power_law_exponential(t, *popt)
-            
-        elif model == "duong":
-            p0 = [qi_init, 0.7, 1.5]
-            bounds = ([qi_init * 0.05, 0.1, 0.01], 
-                     [qi_init * 5, 0.99, 20.0])
-            
-            popt, _ = curve_fit(
-                duong_model, t_valid, q_valid, 
-                p0=p0, bounds=bounds, maxfev=15000, method='trf'
-            )
-            func = lambda t: duong_model(t, *popt)
-        else:
-            return None, None, None
-            
-        # Calculate 30-year EUR (monthly steps, shifted to start at 0)
-        t_forecast = np.arange(0, FORECAST_YEARS * 12 + 1, 1)
-        q_forecast = func(t_forecast)
-        
-        # Only integrate positive, finite values
-        valid_forecast = (q_forecast > 0) & np.isfinite(q_forecast)
-        if np.any(valid_forecast):
-            eur = np.trapz(q_forecast[valid_forecast], t_forecast[valid_forecast])
-        else:
-            eur = 0
-            
-        return popt, func, eur
-        
-    except (RuntimeError, ValueError, Warning) as e:
-        # Log error for debugging but don't crash
-        print(f"DCA fit failed for {model}: {str(e)}")
-        return None, None, None
 
 
 # ── Visualization Components ─────────────────────────────────────────────────
@@ -435,163 +248,7 @@ def create_ratio_plot(well_data: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def create_shale_dca_plot(
-    well_data: pd.DataFrame, 
-    fluid: str, 
-    selected_well: str
-) -> Tuple[go.Figure, Dict]:
-    """Create DCA plot with shale-specific models."""
-    config = PLOT_CONFIG[fluid]
-    rate_col = f"{fluid}_rate"
-    
-    well_norm = calculate_months_on_production(well_data)
-    months = well_norm["months_on_prod"].values
-    rates = well_norm[rate_col].values
-    
-    fig = go.Figure()
-    
-    # Historical data
-    fig.add_trace(go.Scatter(
-        x=months, y=rates,
-        mode="markers",
-        name="Datos Históricos",
-        marker=dict(color="black", size=8, opacity=0.7),
-    ))
-    
-    results = {
-        "fluid": fluid,
-        "models": {},
-        "best_model": None,
-        "best_r2": -np.inf
-    }
-    
-    if len(months) >= MIN_DATA_POINTS:
-        # Fit all models
-        max_month = max(months.max() + 60, 120)
-        forecast_months = np.linspace(0, max_month, 300)
-        
-        model_configs = [
-            ("ple", "Power-Law Exponential", "blue", "solid"),
-            ("modified_hyperbolic", "Modified Hyperbolic", "red", "dash"),
-            ("duong", "Duong", "purple", "dot")
-        ]
-        
-        for model_key, model_name, color, dash in model_configs:
-            params, func, eur = fit_shale_decline(months, rates, model=model_key)
-            
-            if func is not None:
-                # Calculate R² on historical data only
-                q_pred = func(months - months.min())
-                
-                # Safe R² calculation
-                ss_res = np.sum((rates - q_pred) ** 2)
-                ss_tot = np.sum((rates - np.mean(rates)) ** 2)
-                r2 = 1 - (ss_res / ss_tot) if ss_tot > 1e-10 else 0
-                
-                # Only accept positive R²
-                if r2 > 0:
-                    results["models"][model_key] = {
-                        "params": params,
-                        "r2": r2,
-                        "eur_30yr": eur,
-                        "name": model_name
-                    }
-                    
-                    if r2 > results["best_r2"]:
-                        results["best_r2"] = r2
-                        results["best_model"] = model_key
-                    
-                    # Forecast
-                    q_forecast = func(forecast_months)
-                    
-                    # Clip unrealistic values for display
-                    q_forecast = np.clip(q_forecast, 0, rates.max() * 3)
-                    
-                    fig.add_trace(go.Scatter(
-                        x=forecast_months, y=q_forecast,
-                        mode="lines",
-                        name=f"{model_name} (R²={r2:.3f})",
-                        line=dict(color=color, dash=dash, width=2),
-                        opacity=0.8,
-                    ))
-    
-    # Highlight best model
-    if results["best_model"]:
-        best_name = results["models"][results["best_model"]]["name"]
-        fig.add_annotation(
-            x=0.02, y=0.98,
-            xref="paper", yref="paper",
-            text=f"🏆 Mejor ajuste: {best_name}",
-            showarrow=False,
-            font=dict(size=12, color="green"),
-            bgcolor="white", opacity=0.9,
-            align="left", valign="top",
-            bordercolor="green", borderwidth=1
-        )
-    
-    use_log = st.session_state.get("log_scale_dca", True)
-    
-    fig.update_layout(
-        title=f"DCA Shale - {config['title']} ({selected_well})",
-        xaxis_title="Meses en Producción",
-        yaxis_title=f"Caudal ({config['unit']})",
-        yaxis_type="log" if use_log else "linear",
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=500,
-    )
-    
-    # Vertical line at end of history
-    fig.add_vline(
-        x=months.max(), 
-        line_dash="dash", 
-        line_color="gray", 
-        opacity=0.5,
-        annotation_text="Fin Historia", 
-        annotation_position="top"
-    )
-    
-    return fig, results
-
-
-def render_dca_details(results: Dict):
-    """Render DCA results."""
-    if not results["models"]:
-        st.warning("No se pudieron ajustar los modelos (insuficientes datos o calidad)")
-        return
-    
-    st.subheader("Resultados del Ajuste")
-    
-    cols = st.columns(len(results["models"]))
-    model_order = ["ple", "modified_hyperbolic", "duong"]
-    
-    for idx, model_key in enumerate(model_order):
-        if model_key not in results["models"]:
-            continue
-            
-        data = results["models"][model_key]
-        is_best = model_key == results["best_model"]
-        
-        with cols[idx]:
-            border = "2px solid #4CAF50" if is_best else "1px solid #ddd"
-            bg_color = "#f1f8e9" if is_best else "white"
-            
-            st.markdown(f"""
-            <div style="border: {border}; padding: 10px; border-radius: 5px; background-color: {bg_color};">
-                <h4>{'🏆 ' if is_best else ''}{data['name']}</h4>
-                <p><b>R²:</b> {data['r2']:.4f}</p>
-                <p><b>EUR (30a):</b> {data['eur_30yr']:,.0f}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            params = data["params"]
-            if model_key == "ple" and params is not None:
-                st.caption(f"n={params[2]:.3f} (transitorio si <0.8)")
-            elif model_key == "modified_hyperbolic" and params is not None:
-                st.caption(f"b={params[2]:.2f}, Dmin={params[3]:.4f}")
-            elif model_key == "duong" and params is not None:
-                st.caption(f"m={params[1]:.3f}")
-
+# ── UI Components ─────────────────────────────────────────────────────────────
 
 def render_sidebar(df: pd.DataFrame) -> Tuple[List[str], str, str]:
     """Render sidebar filters."""
@@ -649,8 +306,8 @@ def render_metrics(well_data: pd.DataFrame):
 # ── Main Application ─────────────────────────────────────────────────────────
 
 def main():
-    st.title(":blue[Análisis Avanzado de Pozo Individual]")
-    st.caption("Capítulo IV - Shale DCA & Benchmarking")
+    st.title(":blue[Análisis de Pozo Individual]")
+    st.caption("Capítulo IV - Benchmarking & Análisis de Fluidos")
     
     df = get_data_from_session()
     if df is None:
@@ -686,17 +343,16 @@ def main():
     st.write(f"**Tipo:** {tipo_pozo} | **Área:** {area} | **Formación:** {formacion}")
     render_metrics(well_data)
     
-    # Tabs
-    tab_rates, tab_cumul, tab_ratios, tab_decline = st.tabs([
+    # Tabs (sin DCA)
+    tab_rates, tab_cumul, tab_ratios = st.tabs([
         "📈 Producción vs Benchmark", 
         "📊 Acumuladas", 
-        "⚗️ Relaciones de Fluidos", 
-        "📉 DCA Shale"
+        "⚗️ Relaciones de Fluidos"
     ])
     
     with tab_rates:
         st.subheader("Comparación con Pozos Similares")
-        st.caption("Línea sólida: Pozo | Gris: Promedio | Naranja: P50")
+        st.caption("Línea sólida: Pozo seleccionado | Gris: Promedio | Naranja: P50")
         
         for fluid in ["oil", "gas", "water"]:
             fig = create_rate_plot_with_benchmark(well_data, benchmark_data, fluid, selected_well)
@@ -735,38 +391,7 @@ def main():
             st.markdown("""
             - **GOR ↑**: Caída de presión, conificación de gas, o drenaje de gas en solución
             - **WOR ↑**: Breakthrough de agua, conificación, o comunicación con acuífero
-            - **Estable**: Drenaje uniforme del yacimiento
-            """)
-    
-    with tab_decline:
-        st.subheader("Análisis de Declinación para Shale")
-        st.caption("Modelos: PLE (transitorio), Modified Hyperbolic (terminal), Duong (fracturas)")
-        
-        st.session_state["log_scale_dca"] = st.toggle("Escala Log", value=True)
-        
-        for fluid in ["oil", "gas"]:
-            st.markdown(f"### {PLOT_CONFIG[fluid]['title']}")
-            fig, results = create_shale_dca_plot(well_data, fluid, selected_well)
-            st.plotly_chart(fig, use_container_width=True)
-            render_dca_details(results)
-        
-        with st.expander("ℹ️ Guía de Modelos Shale"):
-            st.markdown("""
-            **Power-Law Exponential (PLE)**:
-            - q(t) = qi·exp(-D·tⁿ)
-            - n≈0.5: Flujo lineal (fractura infinita)
-            - n→1.0: Flujo radial (boundary-dominated)
-            - **Mejor para**: Primeros 2-3 años de producción
-            
-            **Modified Hyperbolic**:
-            - Hiperbólica hasta Dmin, luego exponencial
-            - Dmin típico: 5-15% anual (shale oil)
-            - **Mejor para**: Pronósticos económicos (evita sobreestimación)
-            
-            **Duong**:
-            - Especializado en pozos con flujo lineal dominante
-            - Popular en gas shale (Marcellus, Haynesville)
-            - **Mejor para**: Pozos con >1 año de flujo lineal claro
+            - **Tendencia estable**: Comportamiento de drenaje uniforme
             """)
     
     # Export
