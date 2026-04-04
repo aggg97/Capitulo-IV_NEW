@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
-from utils import COMPANY_REPLACEMENTS
+from utils import COMPANY_REPLACEMENTS, get_fluid_classification
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -16,9 +16,11 @@ if "df" in st.session_state:
     data_sorted["oil_rate"]   = data_sorted["prod_pet"] / data_sorted["tef"]
     data_sorted               = data_sorted.sort_values(by=["sigla", "date"], ascending=True)
     data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
+    data_sorted               = get_fluid_classification(data_sorted)
     st.info("Utilizando datos recuperados de la memoria.")
 else:
     st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la Página Principal.")
+    st.stop()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -34,6 +36,8 @@ selected_company = st.sidebar.selectbox(
 
 company_data = data_sorted[data_sorted["empresaNEW"] == selected_company]
 
+color_palette = px.colors.qualitative.Set3
+
 
 # ── Company-level stacked area charts ────────────────────────────────────────
 
@@ -43,8 +47,6 @@ summary_df = (
     .agg(total_gas_rate=("gas_rate", "sum"), total_oil_rate=("oil_rate", "sum"))
     .reset_index()
 )
-
-color_palette = px.colors.qualitative.Set3
 
 
 def build_stacked_area(summary: pd.DataFrame, y_col: str, y_label: str, title: str) -> go.Figure:
@@ -83,6 +85,8 @@ st.plotly_chart(build_stacked_area(
 
 # ── Top-10 well filters ───────────────────────────────────────────────────────
 
+st.divider()
+
 selected_area = st.selectbox(
     "Seleccione el área de yacimiento",
     options=sorted(company_data["areayacimiento"].unique()),
@@ -112,7 +116,7 @@ top_10_gas_data = company_data[company_data["sigla"].isin(top_10_gas_wells)].cop
 
 def add_time_zero(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Adds a 'month_number' column counting from the first month where any
+    Adds 'month_number' column counting from the first month where any
     production (oil or gas) > 0. Month 1 = first producing month.
     """
     df = df.copy()
@@ -193,7 +197,109 @@ st.plotly_chart(build_top10_chart(
 ), use_container_width=True)
 
 
+# ── Diagnostic plots ──────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("📊 Gráficos Diagnóstico")
+
+# Compute per-row ratios needed for diagnostic plots
+diag_data = company_data.copy()
+diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], None)
+diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], None)
+diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], None)
+
+# Separate by fluid type
+gasifero_data   = diag_data[diag_data["tipopozoNEW"] == "Gasífero"]
+petrolifero_data = diag_data[diag_data["tipopozoNEW"] == "Petrolífero"]
+
+# Available plots per fluid type
+GAS_PLOTS = {
+    "Qg vs Gp":  ("Gp",  "gas_rate", "Gp (km3)",        "Qg (km3/d)"),
+    "WGR vs Gp": ("Gp",  "WGR",      "Gp (km3)",        "WGR (m3/km3)"),
+    "GOR vs Gp": ("Gp",  "GOR",      "Gp (km3)",        "GOR (m3/km3)"),
+}
+OIL_PLOTS = {
+    "Qo vs Np":  ("Np",  "oil_rate", "Np (m3)",         "Qo (m3/d)"),
+    "WOR vs Np": ("Np",  "WOR",      "Np (m3)",         "WOR (m3/m3)"),
+    "GOR vs Np": ("Np",  "GOR",      "Np (m3)",         "GOR (m3/m3)"),
+}
+
+col_left, col_right = st.columns(2)
+with col_left:
+    selected_gas_plots = st.multiselect(
+        "Gráficos Gasífero",
+        options=list(GAS_PLOTS.keys()),
+        default=[],
+    )
+with col_right:
+    selected_oil_plots = st.multiselect(
+        "Gráficos Petrolífero",
+        options=list(OIL_PLOTS.keys()),
+        default=[],
+    )
+
+all_selected = (
+    [("gas",  name, GAS_PLOTS[name]) for name in selected_gas_plots] +
+    [("oil",  name, OIL_PLOTS[name]) for name in selected_oil_plots]
+)
+
+
+def build_diagnostic_chart(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    x_label: str,
+    y_label: str,
+    title: str,
+) -> go.Figure:
+    fig = go.Figure()
+    for i, well in enumerate(data["sigla"].unique()):
+        wd = data[data["sigla"] == well].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if wd.empty:
+            continue
+        fig.add_trace(go.Scatter(
+            x=wd[x_col],
+            y=wd[y_col],
+            mode="lines+markers",
+            name=well,
+            line=dict(color=color_palette[i % len(color_palette)]),
+            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
+        ))
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=y_label,
+        hovermode="x unified",
+        legend_title="Pozo",
+    )
+    return fig
+
+
+if all_selected:
+    # Render in a 2-column grid
+    for i in range(0, len(all_selected), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            if i + j >= len(all_selected):
+                break
+            fluid, plot_name, (x_col, y_col, x_label, y_label) = all_selected[i + j]
+            source = gasifero_data if fluid == "gas" else petrolifero_data
+            fluid_label = "Gasífero" if fluid == "gas" else "Petrolífero"
+            with col:
+                st.plotly_chart(
+                    build_diagnostic_chart(
+                        source, x_col, y_col, x_label, y_label,
+                        f"{fluid_label} — {plot_name}",
+                    ),
+                    use_container_width=True,
+                )
+else:
+    st.caption("Seleccione al menos un gráfico diagnóstico para visualizarlo.")
+
+
 # ── Data table & download ─────────────────────────────────────────────────────
+
+st.divider()
 
 COLUMN_RENAME = {
     "sigla":          "Sigla",
@@ -212,7 +318,6 @@ COLUMN_RENAME = {
     "areayacimiento": "Área yacimiento",
 }
 
-# Download reflects the current top-10 selection (oil + gas wells combined)
 download_data = (
     pd.concat([top_10_oil_data, top_10_gas_data])
     .drop_duplicates()
