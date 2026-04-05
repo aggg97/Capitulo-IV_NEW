@@ -18,9 +18,7 @@ def load_and_sort_data(dataset_url: str) -> pd.DataFrame:
             "tef", "empresa", "areayacimiento", "coordenadax", "coordenaday",
             "formprod", "sub_tipo_recurso", "tipopozo",
         ])
-        df["date"] = pd.to_datetime(
-            df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1"
-        )
+        df["date"]       = pd.to_datetime(df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1")
         df["gas_rate"]   = df["prod_gas"]  / df["tef"]
         df["oil_rate"]   = df["prod_pet"]  / df["tef"]
         df["water_rate"] = df["prod_agua"] / df["tef"]
@@ -37,8 +35,24 @@ def load_and_sort_data(dataset_url: str) -> pd.DataFrame:
 
 if "df" not in st.session_state:
     with st.spinner("🔄 Sincronizando los últimos datos oficiales de la Secretaría de Energía..."):
-        st.session_state["df"] = load_and_sort_data(DATASET_URL)
+        df = load_and_sort_data(DATASET_URL)
+        if df.empty:
+            st.error(
+                "⚠️ No se pudieron cargar los datos (timeout o error de red). "
+                "Por favor, recargá la página para intentar nuevamente."
+            )
+            st.stop()
+        st.session_state["df"] = df
         st.success("✅ Datos cargados correctamente. La sesión está activa para todas las páginas.")
+
+# Guard: handle case where a previous session stored an empty DataFrame
+if st.session_state["df"].empty:
+    del st.session_state["df"]
+    st.error(
+        "⚠️ Los datos almacenados están vacíos. "
+        "Por favor, recargá la página para volver a cargarlos."
+    )
+    st.stop()
 
 data_sorted = st.session_state["df"]
 data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
@@ -78,7 +92,7 @@ st.caption(
 )
 
 col1, col2, col3 = st.columns(3)
-col1.metric(label=":red[Total Caudal de Gas (MMm³/d)]",    value=total_gas_rate_rounded)
+col1.metric(label=":red[Total Caudal de Gas (MMm³/d)]",       value=total_gas_rate_rounded)
 col2.metric(label=":green[Total Caudal de Petróleo (km³/d)]", value=total_oil_rate_rounded)
 col3.metric(label=":green[Total Caudal de Petróleo (kbpd)]",  value=oil_rate_bpd_rounded)
 
