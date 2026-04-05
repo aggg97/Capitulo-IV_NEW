@@ -1,208 +1,275 @@
-"""
-Single Well Analysis Page
-=========================
-Interactive production analysis for individual wells.
-Data is shared from the main page via session state.
-"""
-
-import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 from PIL import Image
 
-
-# ── Constants ────────────────────────────────────────────────────────────────
-
-PLOT_CONFIG = {
-    "gas": {"color": "red", "title": "Gas", "unit": "km³/d"},
-    "oil": {"color": "green", "title": "Petróleo", "unit": "m³/d"},
-    "water": {"color": "blue", "title": "Agua", "unit": "m³/d"},
-}
-
-COLUMN_RENAMES = {
-    "sigla": "Sigla",
-    "date": "Fecha",
-    "oil_rate": "Caudal de petróleo (m³/d)",
-    "gas_rate": "Caudal de gas (m³/d)",
-    "water_rate": "Caudal de agua (m³/d)",
-    "Np": "Acumulada de Petróleo (m³)",
-    "Gp": "Acumulada de Gas (m³)",
-    "Wp": "Acumulada de Agua (m³)",
-    "tef": "TEF",
-    "tipoextraccion": "Tipo de Extracción",
-    "tipopozo": "Tipo de Pozo",
-    "empresa": "Empresa",
-    "formacion": "Formación",
-    "areayacimiento": "Área yacimiento",
-}
-
-MAX_RATE_THRESHOLD = 1_000_000
+from utils import COMPANY_REPLACEMENTS, get_fluid_classification
 
 
-# ── Data Loading ─────────────────────────────────────────────────────────────
+# ── Session state ─────────────────────────────────────────────────────────────
 
-def get_data_from_session() -> pd.DataFrame | None:
-    """Retrieve and prepare data from session state."""
-    if "df" not in st.session_state:
-        return None
-    
-    df = st.session_state["df"].copy()
-    
-    # Ensure date column exists
-    if "date" not in df.columns:
-        df["date"] = pd.to_datetime(
-            df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1"
-        )
-    
-    # Ensure rate columns exist
-    if "gas_rate" not in df.columns:
-        df["gas_rate"] = df["prod_gas"] / df["tef"]
-    if "oil_rate" not in df.columns:
-        df["oil_rate"] = df["prod_pet"] / df["tef"]
-    if "water_rate" not in df.columns:
-        df["water_rate"] = df["prod_agua"] / df["tef"]
-    
-    return df.sort_values(by=["sigla", "date"])
+if "df" in st.session_state:
+    data_sorted = st.session_state["df"]
+    data_sorted["date"]       = pd.to_datetime(data_sorted["anio"].astype(str) + "-" + data_sorted["mes"].astype(str) + "-1")
+    data_sorted["gas_rate"]   = data_sorted["prod_gas"] / data_sorted["tef"]
+    data_sorted["oil_rate"]   = data_sorted["prod_pet"] / data_sorted["tef"]
+    data_sorted["water_rate"] = data_sorted["prod_agua"] / data_sorted["tef"]
+    data_sorted               = data_sorted.sort_values(by=["sigla", "date"], ascending=True)
+    data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
+    data_sorted               = get_fluid_classification(data_sorted)
+    st.info("Utilizando datos recuperados de la memoria.")
+else:
+    st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la Página Principal.")
+    st.stop()
 
 
-# ── UI Components ─────────────────────────────────────────────────────────────
+# ── Sidebar filters ───────────────────────────────────────────────────────────
 
-def render_sidebar(df: pd.DataFrame) -> tuple:
-    """Render sidebar filters and return selected values."""
-    st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-    st.sidebar.title("Filtros")
-    
-    # Well type filter
-    well_types = df["tipopozo"].unique()
-    selected_types = st.sidebar.multiselect(
-        "Tipo de pozo:",
-        options=well_types,
-        default=well_types[0] if len(well_types) > 0 else None,
-    )
-    
-    # Company filter
-    companies = df["empresa"].unique()
-    selected_company = st.sidebar.selectbox("Operadora:", options=companies)
-    
-    # Well filter (dependent on company and type)
-    available_wells = df[
-        (df["tipopozo"].isin(selected_types)) & 
-        (df["empresa"] == selected_company)
-    ]["sigla"].unique()
-    
-    selected_well = st.sidebar.selectbox(
-        "Sigla del pozo:",
-        options=available_wells if len(available_wells) > 0 else ["No disponible"],
-        disabled=len(available_wells) == 0,
-    )
-    
-    return selected_types, selected_company, selected_well
+st.title(":blue[Análisis de Pozo Individual]")
+st.sidebar.image(Image.open("Vaca Muerta rig.png"))
+st.sidebar.title("Por favor filtrar aquí:")
 
+selected_tipo = st.sidebar.multiselect(
+    "Seleccionar tipo de pozo:",
+    options=sorted(data_sorted["tipopozoNEW"].unique()),
+)
 
-def render_metrics(well_data: pd.DataFrame):
-    """Display key production metrics for the selected well."""
-    # Calculate max rates (capped at threshold to filter outliers)
-    max_rates = {
-        fluid: well_data.loc[well_data[f"{fluid}_rate"] <= MAX_RATE_THRESHOLD, f"{fluid}_rate"].max()
-        for fluid in ["gas", "oil", "water"]
-    }
-    
-    cols = st.columns(3)
-    metrics = [
-        (":red[Caudal Máximo de Gas]", max_rates["gas"], "km³/d"),
-        (":green[Caudal Máximo de Petróleo]", max_rates["oil"], "m³/d"),
-        (":blue[Caudal Máximo de Agua]", max_rates["water"], "m³/d"),
-    ]
-    
-    for col, (label, value, unit) in zip(cols, metrics):
-        col.metric(label=label, value=f"{value:,.1f} {unit}" if pd.notna(value) else "N/A")
+selected_company = st.sidebar.selectbox(
+    "Seleccionar operadora:",
+    options=sorted(data_sorted["empresaNEW"].unique()),
+)
+
+# Filter available siglas based on tipo and company
+filtered_siglas = data_sorted[
+    (data_sorted["tipopozoNEW"].isin(selected_tipo)) &
+    (data_sorted["empresaNEW"] == selected_company)
+]["sigla"].unique()
+
+selected_sigla = st.sidebar.selectbox(
+    "Seleccionar sigla del pozo:",
+    options=sorted(filtered_siglas),
+)
+
+# Well data
+well_data = data_sorted[
+    (data_sorted["empresaNEW"] == selected_company) &
+    (data_sorted["sigla"] == selected_sigla)
+].copy()
 
 
-def create_rate_plot(well_data: pd.DataFrame, fluid: str, well_name: str) -> go.Figure:
-    """Create a production rate plot for the specified fluid."""
-    config = PLOT_CONFIG[fluid]
-    rate_col = f"{fluid}_rate"
-    
+# ── Time-zero normalisation ───────────────────────────────────────────────────
+
+first_prod_date = well_data.loc[
+    well_data[["oil_rate", "gas_rate"]].max(axis=1) > 0, "date"
+].min()
+
+well_data["month_number"] = (
+    (well_data["date"].dt.year  - first_prod_date.year) * 12 +
+    (well_data["date"].dt.month - first_prod_date.month) + 1
+)
+well_data = well_data[well_data["month_number"] >= 1]
+
+
+# ── KPI metrics ───────────────────────────────────────────────────────────────
+
+max_gas_rate   = round(well_data["gas_rate"].clip(upper=1_000_000).max(), 1)
+max_oil_rate   = round(well_data["oil_rate"].clip(upper=1_000_000).max(), 1)
+max_water_rate = round(well_data["water_rate"].clip(upper=1_000_000).max(), 1)
+
+st.header(selected_sigla)
+col1, col2, col3 = st.columns(3)
+col1.metric(label=":red[Caudal Máximo de Gas (km3/d)]",   value=max_gas_rate)
+col2.metric(label=":green[Caudal Máximo de Petróleo (m3/d)]", value=max_oil_rate)
+col3.metric(label=":blue[Caudal Máximo de Agua (m3/d)]",  value=max_water_rate)
+
+
+# ── Time-axis toggle ──────────────────────────────────────────────────────────
+
+time_axis = st.radio(
+    "Eje temporal",
+    options=["📅 Fecha calendario", "⏱️ Tiempo cero (mes de producción)"],
+    horizontal=True,
+)
+use_time_zero = time_axis == "⏱️ Tiempo cero (mes de producción)"
+x_col   = "month_number" if use_time_zero else "date"
+x_label = "Mes de Producción" if use_time_zero else "Fecha"
+
+
+# ── Production history charts ─────────────────────────────────────────────────
+
+def build_rate_chart(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    x_label: str,
+    y_label: str,
+    title: str,
+    color: str,
+) -> go.Figure:
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=well_data["date"],
-            y=well_data[rate_col],
-            mode="lines+markers",
-            name=f"{config['title']} Rate",
-            line=dict(color=config["color"]),
-        )
-    )
-    
+    fig.add_trace(go.Scatter(
+        x=data[x_col],
+        y=data[y_col],
+        mode="lines",
+        name=y_col,
+        line=dict(color=color),
+        hovertemplate=f"{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}",
+    ))
     fig.update_layout(
-        title=f"Historia de Producción de {config['title']} - {well_name}",
-        xaxis_title="Fecha",
-        yaxis_title=f"Caudal de {config['title']} ({config['unit']})",
-        yaxis=dict(rangemode="tozero"),
-        hovermode="x unified",
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=y_label,
     )
-    
+    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
-def render_download_section(well_data: pd.DataFrame, well_name: str):
-    """Render data table and CSV download option."""
-    display_df = well_data.rename(columns=COLUMN_RENAMES)
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
-    
-    csv = display_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="📥 Descargar datos como CSV",
-        data=csv,
-        file_name=f"{well_name}_production.csv",
-        mime="text/csv",
+st.plotly_chart(build_rate_chart(
+    well_data, x_col, "gas_rate", x_label,
+    "Caudal de Gas (km3/d)",
+    f"Historia de Producción de Gas — {selected_sigla}",
+    "red",
+), use_container_width=True)
+
+st.plotly_chart(build_rate_chart(
+    well_data, x_col, "oil_rate", x_label,
+    "Caudal de Petróleo (m3/d)",
+    f"Historia de Producción de Petróleo — {selected_sigla}",
+    "green",
+), use_container_width=True)
+
+st.plotly_chart(build_rate_chart(
+    well_data, x_col, "water_rate", x_label,
+    "Caudal de Agua (m3/d)",
+    f"Historia de Producción de Agua — {selected_sigla}",
+    "blue",
+), use_container_width=True)
+
+
+# ── Diagnostic plots ──────────────────────────────────────────────────────────
+
+st.divider()
+st.subheader("📊 Gráficos Diagnóstico")
+
+# Per-row ratios
+diag_data = well_data.copy()
+diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], None)
+diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], None)
+diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], None)
+
+# Plot definitions per fluid type
+GAS_PLOTS = {
+    "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
+    "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
+    "GOR vs Gp": ("Gp", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
+}
+OIL_PLOTS = {
+    "Qo vs Np":  ("Np", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
+    "WOR vs Np": ("Np", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
+    "GOR vs Np": ("Np", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
+}
+
+# Show plots relevant to the well's fluid type
+well_fluid = well_data["tipopozoNEW"].iloc[0] if not well_data.empty else None
+
+if well_fluid == "Gasífero":
+    available_plots = GAS_PLOTS
+    fluid_label     = "Gasífero"
+elif well_fluid == "Petrolífero":
+    available_plots = OIL_PLOTS
+    fluid_label     = "Petrolífero"
+else:
+    available_plots = {**GAS_PLOTS, **OIL_PLOTS}
+    fluid_label     = "Todos"
+
+selected_diag_plots = st.multiselect(
+    f"Seleccionar gráficos diagnóstico ({fluid_label})",
+    options=list(available_plots.keys()),
+    default=[],
+)
+
+
+def build_diagnostic_chart(
+    data: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    x_label: str,
+    y_label: str,
+    title: str,
+    color: str = "#1f77b4",
+) -> go.Figure:
+    plot_data = data.dropna(subset=[x_col, y_col]).sort_values(x_col)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=plot_data[x_col],
+        y=plot_data[y_col],
+        mode="lines",
+        line=dict(color=color),
+        hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
+    ))
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_label,
+        yaxis_title=y_label,
     )
+    fig.update_yaxes(rangemode="tozero")
+    return fig
 
 
-# ── Main Application ───────────────────────────────────────────────────────────
+# Assign a distinct color per plot type for quick visual recognition
+PLOT_COLORS = {
+    "Qg vs Gp":  "red",
+    "WGR vs Gp": "blue",
+    "GOR vs Gp": "orange",
+    "Qo vs Np":  "green",
+    "WOR vs Np": "blue",
+    "GOR vs Np": "orange",
+}
 
-def main():
-    st.title(":blue[Análisis de Pozo Individual]")
-    st.caption("Capítulo IV - Producción No Convencional")
-    
-    # Data retrieval
-    df = get_data_from_session()
-    if df is None:
-        st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la **Página Principal**.")
-        st.stop()
-    
-    st.success("✅ Datos cargados desde memoria")
-    
-    # Sidebar filters
-    selected_types, selected_company, selected_well = render_sidebar(df)
-    
-    if selected_well == "No disponible":
-        st.error("No hay pozos disponibles para los filtros seleccionados.")
-        st.stop()
-    
-    # Filter data for selected well
-    well_data = df[
-        (df["empresa"] == selected_company) & 
-        (df["sigla"] == selected_well)
-    ].copy()
-    
-    if well_data.empty:
-        st.error(f"No se encontraron datos para el pozo {selected_well}")
-        st.stop()
-    
-    # Header and metrics
-    st.header(selected_well)
-    render_metrics(well_data)
-    
-    # Production plots
-    st.subheader("Históricos de Producción")
-    for fluid in ["gas", "oil", "water"]:
-        st.plotly_chart(create_rate_plot(well_data, fluid, selected_well), use_container_width=True)
-    
-    # Data export
-    st.subheader("Datos Detallados")
-    render_download_section(well_data, selected_well)
+if selected_diag_plots:
+    for plot_name in selected_diag_plots:
+        x_col_d, y_col_d, x_label_d, y_label_d = available_plots[plot_name]
+        st.plotly_chart(
+            build_diagnostic_chart(
+                diag_data, x_col_d, y_col_d, x_label_d, y_label_d,
+                f"{selected_sigla} — {plot_name}",
+                color=PLOT_COLORS.get(plot_name, "#1f77b4"),
+            ),
+            use_container_width=True,
+        )
+else:
+    st.caption("Seleccione al menos un gráfico diagnóstico para visualizarlo.")
 
 
-if __name__ == "__main__":
-    main()
+# ── Data table & download ─────────────────────────────────────────────────────
+
+st.divider()
+
+COLUMN_RENAME = {
+    "sigla":          "Sigla",
+    "date":           "Fecha",
+    "oil_rate":       "Caudal de petróleo (m3/d)",
+    "gas_rate":       "Caudal de gas (km3/d)",
+    "water_rate":     "Caudal de agua (m3/d)",
+    "Np":             "Acumulada de Petróleo (m3)",
+    "Gp":             "Acumulada de Gas (m3)",
+    "Wp":             "Acumulada de Agua (m3)",
+    "tef":            "TEF",
+    "tipoextraccion": "Tipo de Extracción",
+    "tipopozoNEW":    "Tipo de Pozo",
+    "empresaNEW":     "Empresa",
+    "formacion":      "Formación",
+    "areayacimiento": "Área yacimiento",
+}
+
+display_cols   = [c for c in COLUMN_RENAME if c in well_data.columns]
+download_data  = well_data[display_cols].rename(columns=COLUMN_RENAME)
+
+st.write(download_data)
+
+st.download_button(
+    label="⬇️ Descargar tabla como CSV",
+    data=download_data.to_csv(index=False).encode("utf-8"),
+    file_name=f"{selected_sigla}.csv",
+    mime="text/csv",
+)
