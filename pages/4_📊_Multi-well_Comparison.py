@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -30,8 +31,8 @@ st.header(":blue[Comparación Multi-Pozo]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 st.sidebar.title("Por favor filtrar aquí:")
 
-# Fluid filter drives the sigla multiselect
-available_fluids = sorted(data_sorted["tipopozoNEW"].unique())
+# dropna() prevents TypeError when tipopozoNEW contains NaN
+available_fluids = sorted(data_sorted["tipopozoNEW"].dropna().unique())
 selected_fluido  = st.sidebar.selectbox(
     "Seleccionar tipo de fluido (McCain):",
     options=available_fluids,
@@ -59,6 +60,22 @@ OIL_PALETTE   = ["#008000", "#006400", "#90EE90", "#98FB98", "#8FBC8F",
 WATER_PALETTE = ["#0000FF", "#0000CD", "#00008B", "#000080", "#191970",
                  "#7B68EE", "#6A5ACD", "#483D8B", "#B0E0E6", "#ADD8E6",
                  "#87CEFA", "#87CEEB", "#00BFFF", "#B0C4DE", "#1E90FF", "#6495ED"]
+
+
+# ── Shared y-axis scaler ──────────────────────────────────────────────────────
+
+def robust_yaxis_range(series: pd.Series, margin: float = 0.10) -> list:
+    """
+    Returns [y_min, y_max] based on 1st and 99th percentile,
+    with a margin above the upper bound. Ignores NaN and inf.
+    Falls back to [0, None] if data is empty.
+    """
+    clean = series.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return [0, None]
+    y_min = max(0, np.percentile(clean, 1))
+    y_max = np.percentile(clean, 99)
+    return [y_min, y_max * (1 + margin)]
 
 
 # ── Time-zero normalisation ───────────────────────────────────────────────────
@@ -95,7 +112,8 @@ def build_rate_chart(
     title: str,
     palette: list,
 ) -> go.Figure:
-    fig = go.Figure()
+    fig        = go.Figure()
+    all_y_vals = []
     for i, sigla in enumerate(wells):
         wd = data[data["sigla"] == sigla].sort_values(x_col)
         fig.add_trace(go.Scatter(
@@ -106,14 +124,15 @@ def build_rate_chart(
             line=dict(color=palette[i % len(palette)]),
             hovertemplate=f"{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}",
         ))
+        all_y_vals.extend(wd[y_col].tolist())
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=robust_yaxis_range(pd.Series(all_y_vals)),
         hovermode="x unified",
         legend_title="Pozo",
     )
-    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
@@ -127,7 +146,8 @@ def build_diagnostic_chart(
     title: str,
     palette: list,
 ) -> go.Figure:
-    fig = go.Figure()
+    fig        = go.Figure()
+    all_y_vals = []
     for i, sigla in enumerate(wells):
         wd = data[data["sigla"] == sigla].dropna(subset=[x_col, y_col]).sort_values(x_col)
         if wd.empty:
@@ -140,14 +160,15 @@ def build_diagnostic_chart(
             line=dict(color=palette[i % len(palette)]),
             hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
         ))
+        all_y_vals.extend(wd[y_col].tolist())
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=robust_yaxis_range(pd.Series(all_y_vals)),
         hovermode="x unified",
         legend_title="Pozo",
     )
-    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
@@ -202,11 +223,10 @@ st.plotly_chart(build_rate_chart(
 st.divider()
 st.subheader("📊 Gráficos Diagnóstico")
 
-# Per-row ratios
 diag_data = plot_data.copy()
-diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], None)
-diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], None)
-diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], None)
+diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
 
 GAS_PLOTS = {
     "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)",   GAS_PALETTE),
