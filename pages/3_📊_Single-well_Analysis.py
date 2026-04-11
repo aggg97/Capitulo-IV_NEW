@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -29,9 +30,10 @@ st.title(":blue[Análisis de Pozo Individual]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 st.sidebar.title("Por favor filtrar aquí:")
 
+# dropna() prevents TypeError when tipopozoNEW contains NaN
 selected_tipo = st.sidebar.multiselect(
     "Seleccionar tipo de pozo:",
-    options=sorted(data_sorted["tipopozoNEW"].unique()),
+    options=sorted(data_sorted["tipopozoNEW"].dropna().unique()),
 )
 
 selected_company = st.sidebar.selectbox(
@@ -45,6 +47,11 @@ filtered_siglas = data_sorted[
     (data_sorted["empresaNEW"] == selected_company)
 ]["sigla"].unique()
 
+# Guard: nothing to show until the user picks at least one well type
+if len(selected_tipo) == 0 or len(filtered_siglas) == 0:
+    st.info("👈 Seleccioná al menos un tipo de pozo y una operadora para comenzar.")
+    st.stop()
+
 selected_sigla = st.sidebar.selectbox(
     "Seleccionar sigla del pozo:",
     options=sorted(filtered_siglas),
@@ -56,12 +63,22 @@ well_data = data_sorted[
     (data_sorted["sigla"] == selected_sigla)
 ].copy()
 
+# Guard: empty well data should never happen but protects downstream
+if well_data.empty:
+    st.warning("No se encontraron datos para el pozo seleccionado.")
+    st.stop()
+
 
 # ── Time-zero normalisation ───────────────────────────────────────────────────
 
 first_prod_date = well_data.loc[
     well_data[["oil_rate", "gas_rate"]].max(axis=1) > 0, "date"
 ].min()
+
+# Guard: well has no production at all
+if pd.isna(first_prod_date):
+    st.warning("El pozo seleccionado no registra producción.")
+    st.stop()
 
 well_data["month_number"] = (
     (well_data["date"].dt.year  - first_prod_date.year) * 12 +
@@ -78,9 +95,9 @@ max_water_rate = round(well_data["water_rate"].clip(upper=1_000_000).max(), 1)
 
 st.header(selected_sigla)
 col1, col2, col3 = st.columns(3)
-col1.metric(label=":red[Caudal Máximo de Gas (km3/d)]",   value=max_gas_rate)
+col1.metric(label=":red[Caudal Máximo de Gas (km3/d)]",       value=max_gas_rate)
 col2.metric(label=":green[Caudal Máximo de Petróleo (m3/d)]", value=max_oil_rate)
-col3.metric(label=":blue[Caudal Máximo de Agua (m3/d)]",  value=max_water_rate)
+col3.metric(label=":blue[Caudal Máximo de Agua (m3/d)]",      value=max_water_rate)
 
 
 # ── Time-axis toggle ──────────────────────────────────────────────────────────
@@ -93,6 +110,22 @@ time_axis = st.radio(
 use_time_zero = time_axis == "⏱️ Tiempo cero (mes de producción)"
 x_col   = "month_number" if use_time_zero else "date"
 x_label = "Mes de Producción" if use_time_zero else "Fecha"
+
+
+# ── Shared y-axis scaler ──────────────────────────────────────────────────────
+
+def robust_yaxis_range(series: pd.Series, margin: float = 0.10) -> list:
+    """
+    Returns [y_min, y_max] based on 1st and 99th percentile,
+    with a margin above the upper bound. Ignores NaN and inf.
+    Falls back to [0, None] if data is empty.
+    """
+    clean = series.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return [0, None]
+    y_min = max(0, np.percentile(clean, 1))
+    y_max = np.percentile(clean, 99)
+    return [y_min, y_max * (1 + margin)]
 
 
 # ── Production history charts ─────────────────────────────────────────────────
@@ -115,12 +148,13 @@ def build_rate_chart(
         line=dict(color=color),
         hovertemplate=f"{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}",
     ))
+    y_range = robust_yaxis_range(data[y_col])
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=y_range,
     )
-    fig.update_yaxes(rangemode="tozero")
     return fig
 
 
@@ -153,11 +187,10 @@ st.subheader("📊 Gráficos Diagnóstico")
 
 # Per-row ratios
 diag_data = well_data.copy()
-diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], None)
-diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], None)
-diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], None)
+diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
 
-# Plot definitions per fluid type
 GAS_PLOTS = {
     "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
     "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
@@ -169,8 +202,8 @@ OIL_PLOTS = {
     "GOR vs Np": ("Np", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
 }
 
-# Show plots relevant to the well's fluid type
-well_fluid = well_data["tipopozoNEW"].iloc[0] if not well_data.empty else None
+# Show only plots relevant to the well's fluid type
+well_fluid = well_data["tipopozoNEW"].iloc[0]
 
 if well_fluid == "Gasífero":
     available_plots = GAS_PLOTS
@@ -187,6 +220,15 @@ selected_diag_plots = st.multiselect(
     options=list(available_plots.keys()),
     default=[],
 )
+
+PLOT_COLORS = {
+    "Qg vs Gp":  "red",
+    "WGR vs Gp": "blue",
+    "GOR vs Gp": "orange",
+    "Qo vs Np":  "green",
+    "WOR vs Np": "blue",
+    "GOR vs Np": "orange",
+}
 
 
 def build_diagnostic_chart(
@@ -207,24 +249,15 @@ def build_diagnostic_chart(
         line=dict(color=color),
         hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
     ))
+    y_range = robust_yaxis_range(plot_data[y_col])
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=y_range,
     )
-    fig.update_yaxes(rangemode="tozero")
     return fig
 
-
-# Assign a distinct color per plot type for quick visual recognition
-PLOT_COLORS = {
-    "Qg vs Gp":  "red",
-    "WGR vs Gp": "blue",
-    "GOR vs Gp": "orange",
-    "Qo vs Np":  "green",
-    "WOR vs Np": "blue",
-    "GOR vs Np": "orange",
-}
 
 if selected_diag_plots:
     for plot_name in selected_diag_plots:
@@ -262,8 +295,8 @@ COLUMN_RENAME = {
     "areayacimiento": "Área yacimiento",
 }
 
-display_cols   = [c for c in COLUMN_RENAME if c in well_data.columns]
-download_data  = well_data[display_cols].rename(columns=COLUMN_RENAME)
+display_cols  = [c for c in COLUMN_RENAME if c in well_data.columns]
+download_data = well_data[display_cols].rename(columns=COLUMN_RENAME)
 
 st.write(download_data)
 
