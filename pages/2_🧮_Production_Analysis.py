@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -34,8 +35,7 @@ selected_company = st.sidebar.selectbox(
     options=sorted(data_sorted["empresaNEW"].unique()),
 )
 
-company_data = data_sorted[data_sorted["empresaNEW"] == selected_company]
-
+company_data  = data_sorted[data_sorted["empresaNEW"] == selected_company]
 color_palette = px.colors.qualitative.Set3
 
 
@@ -100,7 +100,7 @@ selected_year = st.number_input(
     step=1,
 )
 
-area_year_data = company_data[
+area_year_data   = company_data[
     (company_data["areayacimiento"] == selected_area) &
     (company_data["anio"] == selected_year)
 ]
@@ -108,8 +108,8 @@ area_year_data = company_data[
 top_10_oil_wells = area_year_data.sort_values("oil_rate", ascending=False).head(10)["sigla"].unique()
 top_10_gas_wells = area_year_data.sort_values("gas_rate", ascending=False).head(10)["sigla"].unique()
 
-top_10_oil_data = company_data[company_data["sigla"].isin(top_10_oil_wells)].copy()
-top_10_gas_data = company_data[company_data["sigla"].isin(top_10_gas_wells)].copy()
+top_10_oil_data  = company_data[company_data["sigla"].isin(top_10_oil_wells)].copy()
+top_10_gas_data  = company_data[company_data["sigla"].isin(top_10_gas_wells)].copy()
 
 
 # ── Time-zero normalisation ───────────────────────────────────────────────────
@@ -148,6 +148,22 @@ time_axis = st.radio(
 use_time_zero = time_axis == "⏱️ Tiempo cero (mes de producción)"
 
 
+# ── Shared y-axis scaler ──────────────────────────────────────────────────────
+
+def robust_yaxis_range(series: pd.Series, margin: float = 0.10) -> list:
+    """
+    Returns [y_min, y_max] based on the 1st and 99th percentile of the
+    series, with a margin added above the upper bound.
+    Ignores NaN and inf values. Falls back to [0, None] if data is empty.
+    """
+    clean = series.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return [0, None]
+    y_min = max(0, np.percentile(clean, 1))
+    y_max = np.percentile(clean, 99)
+    return [y_min, y_max * (1 + margin)]
+
+
 # ── Top-10 well production profiles ──────────────────────────────────────────
 
 def build_top10_chart(
@@ -172,10 +188,13 @@ def build_top10_chart(
             line=dict(color=color_palette[i % len(color_palette)]),
             hovertemplate=f"{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}",
         ))
+
+    y_range = robust_yaxis_range(well_data[y_col])
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=y_range,
         hovermode="x unified",
         legend_title="Pozos",
     )
@@ -197,21 +216,23 @@ st.plotly_chart(build_top10_chart(
 ), use_container_width=True)
 
 
-# ── Diagnostic plots ──────────────────────────────────────────────────────────
+# ── Diagnostic plots — scoped to top-10 wells ────────────────────────────────
 
 st.divider()
 st.subheader("📊 Gráficos Diagnóstico")
+st.caption("Los gráficos diagnóstico muestran únicamente los Top 10 pozos seleccionados arriba.")
 
-# Compute per-row ratios
-diag_data = company_data.copy()
-diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], None)
-diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], None)
-diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], None)
+# Per-row ratios computed on top-10 data only
+def compute_ratios(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["GOR"] = (df["Gp"] / df["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+    df["WOR"] = (df["Wp"] / df["Np"]).replace([float("inf"), -float("inf")], np.nan)
+    df["WGR"] = (df["Wp"] / df["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+    return df
 
-gasifero_data    = diag_data[diag_data["tipopozoNEW"] == "Gasífero"]
-petrolifero_data = diag_data[diag_data["tipopozoNEW"] == "Petrolífero"]
+diag_oil_data = compute_ratios(top_10_oil_data)
+diag_gas_data = compute_ratios(top_10_gas_data)
 
-# Plot definitions: display name → (x_col, y_col, x_label, y_label)
 GAS_PLOTS = {
     "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
     "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
@@ -226,13 +247,13 @@ OIL_PLOTS = {
 col_left, col_right = st.columns(2)
 with col_left:
     selected_gas_plots = st.multiselect(
-        "Gráficos Gasífero",
+        "Gráficos Gasífero (Top 10 pozos de gas)",
         options=list(GAS_PLOTS.keys()),
         default=[],
     )
 with col_right:
     selected_oil_plots = st.multiselect(
-        "Gráficos Petrolífero",
+        "Gráficos Petrolífero (Top 10 pozos de petróleo)",
         options=list(OIL_PLOTS.keys()),
         default=[],
     )
@@ -245,6 +266,7 @@ all_selected = (
 
 def build_diagnostic_chart(
     data: pd.DataFrame,
+    wells: list,
     x_col: str,
     y_col: str,
     x_label: str,
@@ -252,7 +274,9 @@ def build_diagnostic_chart(
     title: str,
 ) -> go.Figure:
     fig = go.Figure()
-    for i, well in enumerate(data["sigla"].unique()):
+    all_y_values = []
+
+    for i, well in enumerate(wells):
         wd = data[data["sigla"] == well].dropna(subset=[x_col, y_col]).sort_values(x_col)
         if wd.empty:
             continue
@@ -264,10 +288,14 @@ def build_diagnostic_chart(
             line=dict(color=color_palette[i % len(color_palette)]),
             hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
         ))
+        all_y_values.extend(wd[y_col].tolist())
+
+    y_range = robust_yaxis_range(pd.Series(all_y_values))
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
+        yaxis_range=y_range,
         hovermode="x unified",
         legend_title="Pozo",
     )
@@ -276,12 +304,13 @@ def build_diagnostic_chart(
 
 if all_selected:
     for fluid, plot_name, (x_col, y_col, x_label, y_label) in all_selected:
-        source      = gasifero_data if fluid == "gas" else petrolifero_data
+        source      = diag_gas_data if fluid == "gas" else diag_oil_data
+        wells       = top_10_gas_wells if fluid == "gas" else top_10_oil_wells
         fluid_label = "Gasífero" if fluid == "gas" else "Petrolífero"
         st.plotly_chart(
             build_diagnostic_chart(
-                source, x_col, y_col, x_label, y_label,
-                f"{fluid_label} — {plot_name}",
+                source, wells, x_col, y_col, x_label, y_label,
+                f"{fluid_label} — {plot_name} (Top 10, {selected_area}, {selected_year})",
             ),
             use_container_width=True,
         )

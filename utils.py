@@ -1,9 +1,22 @@
 """
 utils.py — Shared constants and helpers for the Vaca Muerta dashboard.
-Import from any page with: from utils import COMPANY_REPLACEMENTS, DATASET_URL, DATASET_FRAC_URL
+
+Import from any page with:
+    from utils import COMPANY_REPLACEMENTS, DATASET_URL, DATASET_FRAC_URL
+    from utils import get_fluid_classification, load_frac_data, create_summary_dataframe
+
+Dependency order for callers
+─────────────────────────────
+1. Load production data         → load_and_sort_data()  (defined in main page)
+2. Classify fluid type          → get_fluid_classification(df)
+3. Load fracture data           → load_frac_data()
+4. Build per-well summary       → create_summary_dataframe(df)
+   └─ requires tipopozoNEW column (step 2 must run first)
 """
 
 import pandas as pd
+import streamlit as st
+from dateutil.relativedelta import relativedelta
 
 
 # ── Dataset URLs ──────────────────────────────────────────────────────────────
@@ -54,39 +67,118 @@ def get_fluid_classification(df: pd.DataFrame) -> pd.DataFrame:
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain columns: sigla, Np, Gp, Wp, tipopozo.
+        Must contain: sigla, Np, Gp, Wp, tipopozo.
 
     Returns
     -------
     pd.DataFrame
         Original DataFrame with 'tipopozoNEW' merged in.
     """
-    # Cumulative maxima per well
     cum = (
         df.groupby("sigla")[["Np", "Gp", "Wp"]]
         .max()
         .reset_index()
     )
 
-    # Ratios — fill NaN (division by zero) with large sentinel
     cum["GOR"] = (cum["Gp"] / cum["Np"] * 1000).fillna(100_000)
     cum["WOR"] = (cum["Wp"] / cum["Np"]).fillna(100_000)
     cum["WGR"] = (cum["Wp"] / cum["Gp"] * 1000).fillna(100_000)
 
-    # McCain fluid classification
     cum["Fluido McCain"] = cum.apply(
         lambda r: "Gasífero" if r["Np"] == 0 or r["GOR"] > 3_000 else "Petrolífero",
         axis=1,
     )
 
-    # Merge original tipopozo (one unique row per sigla)
     tipopozo_unique = df[["sigla", "tipopozo"]].drop_duplicates(subset=["sigla"])
     cum = cum.merge(tipopozo_unique, on="sigla", how="left")
 
-    # Reclassify 'Otro tipo' wells using McCain; keep original label otherwise
     cum["tipopozoNEW"] = cum.apply(
         lambda r: r["Fluido McCain"] if r["tipopozo"] == "Otro tipo" else r["tipopozo"],
         axis=1,
     )
 
     return df.merge(cum[["sigla", "tipopozoNEW"]], on="sigla", how="left")
+
+
+# ── Fracture data loader ──────────────────────────────────────────────────────
+
+@st.cache_data
+def load_frac_data() -> pd.DataFrame:
+    """
+    Loads, computes total proppant, and applies quality cut-offs to the
+    fracture dataset. Returns one row per fracture job.
+
+    Cut-offs applied
+    ────────────────
+    - longitud_rama_horizontal_m > 100
+    - cantidad_fracturas         > 6
+    - arena_total_tn             > 100
+
+    These remove pilot/appraisal wells and data-entry errors that would
+    distort completion statistics.
+    """
+    df = pd.read_csv(DATASET_FRAC_URL)
+    df["arena_total_tn"] = df["arena_bombeada_nacional_tn"] + df["arena_bombeada_importada_tn"]
+    df = df[
+        (df["longitud_rama_horizontal_m"] > 100) &
+        (df["cantidad_fracturas"]         > 6)   &
+        (df["arena_total_tn"]             > 100)
+    ]
+    return df
+
+
+# ── Per-well summary dataframe ────────────────────────────────────────────────
+
+def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Builds a per-well summary with peak rates, cumulative production,
+    start year, and EUR at 30 / 90 / 180 days.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Filtered production data. Must already contain 'tipopozoNEW'
+        (call get_fluid_classification first) and 'empresaNEW'.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per sigla with aggregated metrics.
+    """
+    if "tipopozoNEW" not in df.columns:
+        raise ValueError(
+            "Column 'tipopozoNEW' not found. "
+            "Call get_fluid_classification(df) before create_summary_dataframe(df)."
+        )
+
+    df = df.copy()
+    df["Qo_peak"]   = df.groupby("sigla")["oil_rate"].transform("max")
+    df["Qg_peak"]   = df.groupby("sigla")["gas_rate"].transform("max")
+    df["start_year"] = df.groupby("sigla")["anio"].transform("min")
+
+    def calculate_eur(group):
+        group      = group.sort_values("date")
+        start_date = group["date"].iloc[0]
+        cum_col    = "Np" if group["tipopozoNEW"].iloc[0] == "Petrolífero" else "Gp"
+        for col, days in [("EUR_30", 30), ("EUR_90", 90), ("EUR_180", 180)]:
+            cutoff     = start_date + relativedelta(days=days)
+            group[col] = group.loc[group["date"] <= cutoff, cum_col].max()
+        return group
+
+    df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
+
+    return df.groupby("sigla").agg(
+        date         =("date",       "first"),
+        start_year   =("start_year", "first"),
+        empresaNEW   =("empresaNEW", "first"),
+        formprod     =("formprod",   "first"),
+        sub_tipo_recurso=("sub_tipo_recurso", "first"),
+        Np           =("Np",         "max"),
+        Gp           =("Gp",         "max"),
+        Wp           =("Wp",         "max"),
+        Qo_peak      =("Qo_peak",    "max"),
+        Qg_peak      =("Qg_peak",    "max"),
+        EUR_30       =("EUR_30",     "max"),
+        EUR_90       =("EUR_90",     "max"),
+        EUR_180      =("EUR_180",    "max"),
+    ).reset_index()
