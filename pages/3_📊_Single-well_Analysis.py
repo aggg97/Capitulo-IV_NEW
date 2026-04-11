@@ -185,21 +185,27 @@ st.plotly_chart(build_rate_chart(
 st.divider()
 st.subheader("📊 Gráficos Diagnóstico")
 
-# Per-row ratios
-diag_data = well_data.copy()
-diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
-diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], np.nan)
-diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+# Recompute clean monotonic cumulative from monthly production sorted by date.
+# The source dataset sometimes has corrections or re-allocations that make the
+# raw Gp/Np columns non-monotonic — recomputing guarantees a clean x-axis.
+diag_data = well_data.sort_values("date").copy()
+diag_data["Gp_clean"] = diag_data["prod_gas"].cumsum()
+diag_data["Np_clean"] = diag_data["prod_pet"].cumsum()
+diag_data["Wp_clean"] = diag_data["prod_agua"].cumsum()
+
+diag_data["GOR"] = (diag_data["Gp_clean"] / diag_data["Np_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WOR"] = (diag_data["Wp_clean"] / diag_data["Np_clean"]).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WGR"] = (diag_data["Wp_clean"] / diag_data["Gp_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
 
 GAS_PLOTS = {
-    "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
-    "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
-    "GOR vs Gp": ("Gp", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
+    "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
+    "WGR vs Gp": ("Gp_clean", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
+    "GOR vs Gp": ("Gp_clean", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
 }
 OIL_PLOTS = {
-    "Qo vs Np":  ("Np", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
-    "WOR vs Np": ("Np", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
-    "GOR vs Np": ("Np", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
+    "Qo vs Np":  ("Np_clean", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
+    "WOR vs Np": ("Np_clean", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
+    "GOR vs Np": ("Np_clean", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
 }
 
 # Show only plots relevant to the well's fluid type
@@ -245,9 +251,9 @@ def build_diagnostic_chart(
     color: str = "#1f77b4",
     semilog: bool = False,
 ) -> go.Figure:
-    # Sort by date to guarantee monotonic x — avoids oscillation from
-    # cumulative columns that may have minor corrections in source data
-    plot_data = data.dropna(subset=[x_col, y_col]).sort_values("date")
+    # Data is already sorted by date and uses clean cumulative columns —
+    # no additional sorting needed here
+    plot_data = data.dropna(subset=[x_col, y_col])
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=plot_data[x_col],
