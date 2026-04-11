@@ -215,11 +215,15 @@ else:
     available_plots = {**GAS_PLOTS, **OIL_PLOTS}
     fluid_label     = "Todos"
 
-selected_diag_plots = st.multiselect(
-    f"Seleccionar gráficos diagnóstico ({fluid_label})",
-    options=list(available_plots.keys()),
-    default=[],
-)
+col_diag, col_log = st.columns([3, 1])
+with col_diag:
+    selected_diag_plots = st.multiselect(
+        f"Seleccionar gráficos diagnóstico ({fluid_label})",
+        options=list(available_plots.keys()),
+        default=[],
+    )
+with col_log:
+    use_semilog = st.checkbox("Escala semilog (eje Y)", value=False)
 
 PLOT_COLORS = {
     "Qg vs Gp":  "red",
@@ -239,8 +243,11 @@ def build_diagnostic_chart(
     y_label: str,
     title: str,
     color: str = "#1f77b4",
+    semilog: bool = False,
 ) -> go.Figure:
-    plot_data = data.dropna(subset=[x_col, y_col]).sort_values(x_col)
+    # Sort by date to guarantee monotonic x — avoids oscillation from
+    # cumulative columns that may have minor corrections in source data
+    plot_data = data.dropna(subset=[x_col, y_col]).sort_values("date")
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=plot_data[x_col],
@@ -249,12 +256,15 @@ def build_diagnostic_chart(
         line=dict(color=color),
         hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
     ))
-    y_range = robust_yaxis_range(plot_data[y_col])
+    y_range = robust_yaxis_range(plot_data[y_col]) if not semilog else None
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
-        yaxis_range=y_range,
+        yaxis=dict(
+            type="log" if semilog else "linear",
+            range=y_range,
+        ),
     )
     return fig
 
@@ -267,6 +277,7 @@ if selected_diag_plots:
                 diag_data, x_col_d, y_col_d, x_label_d, y_label_d,
                 f"{selected_sigla} — {plot_name}",
                 color=PLOT_COLORS.get(plot_name, "#1f77b4"),
+                semilog=use_semilog,
             ),
             use_container_width=True,
         )
