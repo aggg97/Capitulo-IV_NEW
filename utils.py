@@ -167,18 +167,21 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
 
-    return df.groupby("sigla").agg(
-        date         =("date",       "first"),
-        start_year   =("start_year", "first"),
-        empresaNEW   =("empresaNEW", "first"),
-        formprod     =("formprod",   "first"),
-        sub_tipo_recurso=("sub_tipo_recurso", "first"),
-        Np           =("Np",         "max"),
-        Gp           =("Gp",         "max"),
-        Wp           =("Wp",         "max"),
-        Qo_peak      =("Qo_peak",    "max"),
-        Qg_peak      =("Qg_peak",    "max"),
-        EUR_30       =("EUR_30",     "max"),
-        EUR_90       =("EUR_90",     "max"),
-        EUR_180      =("EUR_180",    "max"),
-    ).reset_index()
+    # Build agg dict — only include optional columns if present in df
+    agg = dict(
+        date       =("date",       "first"),
+        start_year =("start_year", "first"),
+        Np         =("Np",         "max"),
+        Gp         =("Gp",         "max"),
+        Wp         =("Wp",         "max"),
+        Qo_peak    =("Qo_peak",    "max"),
+        Qg_peak    =("Qg_peak",    "max"),
+        EUR_30     =("EUR_30",     "max"),
+        EUR_90     =("EUR_90",     "max"),
+        EUR_180    =("EUR_180",    "max"),
+    )
+    for col in ["empresaNEW", "formprod", "sub_tipo_recurso", "tipopozoNEW"]:
+        if col in df.columns:
+            agg[col] = (col, "first")
+
+    return df.groupby("sigla").agg(**agg).reset_index()
