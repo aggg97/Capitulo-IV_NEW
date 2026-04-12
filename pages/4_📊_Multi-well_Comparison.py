@@ -145,11 +145,14 @@ def build_diagnostic_chart(
     y_label: str,
     title: str,
     palette: list,
+    semilog: bool = False,
 ) -> go.Figure:
     fig        = go.Figure()
     all_y_vals = []
     for i, sigla in enumerate(wells):
-        wd = data[data["sigla"] == sigla].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        # Data is pre-sorted by [sigla, date] and uses clean cumulative columns —
+        # no additional sorting needed, just filter and drop NaN
+        wd = data[data["sigla"] == sigla].dropna(subset=[x_col, y_col])
         if wd.empty:
             continue
         fig.add_trace(go.Scatter(
@@ -161,11 +164,16 @@ def build_diagnostic_chart(
             hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
         ))
         all_y_vals.extend(wd[y_col].tolist())
+
+    y_range = robust_yaxis_range(pd.Series(all_y_vals)) if not semilog else None
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
         yaxis_title=y_label,
-        yaxis_range=robust_yaxis_range(pd.Series(all_y_vals)),
+        yaxis=dict(
+            type="log" if semilog else "linear",
+            range=y_range,
+        ),
         hovermode="x unified",
         legend_title="Pozo",
     )
@@ -223,29 +231,44 @@ st.plotly_chart(build_rate_chart(
 st.divider()
 st.subheader("📊 Gráficos Diagnóstico")
 
-diag_data = plot_data.copy()
-diag_data["GOR"] = (diag_data["Gp"] / diag_data["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
-diag_data["WOR"] = (diag_data["Wp"] / diag_data["Np"]).replace([float("inf"), -float("inf")], np.nan)
-diag_data["WGR"] = (diag_data["Wp"] / diag_data["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+# Recompute clean monotonic cumulative per well from monthly production volumes.
+# The source dataset sometimes has corrections that make raw Gp/Np non-monotonic
+# — recomputing per well guarantees a smooth x-axis for every curve.
+diag_data = (
+    plot_data
+    .sort_values(["sigla", "date"])
+    .copy()
+)
+diag_data["Gp_clean"] = diag_data.groupby("sigla")["prod_gas"].cumsum()
+diag_data["Np_clean"] = diag_data.groupby("sigla")["prod_pet"].cumsum()
+diag_data["Wp_clean"] = diag_data.groupby("sigla")["prod_agua"].cumsum()
+
+diag_data["GOR"] = (diag_data["Gp_clean"] / diag_data["Np_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WOR"] = (diag_data["Wp_clean"] / diag_data["Np_clean"]).replace([float("inf"), -float("inf")], np.nan)
+diag_data["WGR"] = (diag_data["Wp_clean"] / diag_data["Gp_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
 
 GAS_PLOTS = {
-    "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)",   GAS_PALETTE),
-    "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)", WATER_PALETTE),
-    "GOR vs Gp": ("Gp", "GOR",      "Gp (km3)",  "GOR (m3/km3)", OIL_PALETTE),
+    "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)",   GAS_PALETTE),
+    "WGR vs Gp": ("Gp_clean", "WGR",      "Gp (km3)",  "WGR (m3/km3)", WATER_PALETTE),
+    "GOR vs Gp": ("Gp_clean", "GOR",      "Gp (km3)",  "GOR (m3/km3)", OIL_PALETTE),
 }
 OIL_PLOTS = {
-    "Qo vs Np":  ("Np", "oil_rate", "Np (m3)",   "Qo (m3/d)",    OIL_PALETTE),
-    "WOR vs Np": ("Np", "WOR",      "Np (m3)",   "WOR (m3/m3)",  WATER_PALETTE),
-    "GOR vs Np": ("Np", "GOR",      "Np (m3)",   "GOR (m3/m3)",  GAS_PALETTE),
+    "Qo vs Np":  ("Np_clean", "oil_rate", "Np (m3)",   "Qo (m3/d)",    OIL_PALETTE),
+    "WOR vs Np": ("Np_clean", "WOR",      "Np (m3)",   "WOR (m3/m3)",  WATER_PALETTE),
+    "GOR vs Np": ("Np_clean", "GOR",      "Np (m3)",   "GOR (m3/m3)",  GAS_PALETTE),
 }
 
 available_plots = GAS_PLOTS if selected_fluido == "Gasífero" else OIL_PLOTS
 
-selected_diag = st.multiselect(
-    f"Seleccionar gráficos diagnóstico ({selected_fluido}):",
-    options=list(available_plots.keys()),
-    default=[],
-)
+col_diag, col_log = st.columns([3, 1])
+with col_diag:
+    selected_diag = st.multiselect(
+        f"Seleccionar gráficos diagnóstico ({selected_fluido}):",
+        options=list(available_plots.keys()),
+        default=[],
+    )
+with col_log:
+    use_semilog = st.checkbox("Escala semilog (eje Y)", value=False)
 
 if selected_diag:
     for plot_name in selected_diag:
@@ -256,6 +279,7 @@ if selected_diag:
                 x_col_d, y_col_d, x_label_d, y_label_d,
                 f"{selected_fluido} — {plot_name}",
                 palette_d,
+                semilog=use_semilog,
             ),
             use_container_width=True,
         )
