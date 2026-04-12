@@ -223,25 +223,31 @@ st.subheader("📊 Gráficos Diagnóstico")
 st.caption("Los gráficos diagnóstico muestran únicamente los Top 10 pozos seleccionados arriba.")
 
 # Per-row ratios computed on top-10 data only
-def compute_ratios(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df["GOR"] = (df["Gp"] / df["Np"] * 1000).replace([float("inf"), -float("inf")], np.nan)
-    df["WOR"] = (df["Wp"] / df["Np"]).replace([float("inf"), -float("inf")], np.nan)
-    df["WGR"] = (df["Wp"] / df["Gp"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+# Recompute clean monotonic cumulative per well from monthly production volumes.
+# The source dataset sometimes has corrections that make raw Gp/Np non-monotonic
+# — recomputing per well guarantees a smooth x-axis for every curve.
+def prepare_diag_data(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values(["sigla", "date"]).copy()
+    df["Gp_clean"] = df.groupby("sigla")["prod_gas"].cumsum()
+    df["Np_clean"] = df.groupby("sigla")["prod_pet"].cumsum()
+    df["Wp_clean"] = df.groupby("sigla")["prod_agua"].cumsum()
+    df["GOR"] = (df["Gp_clean"] / df["Np_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
+    df["WOR"] = (df["Wp_clean"] / df["Np_clean"]).replace([float("inf"), -float("inf")], np.nan)
+    df["WGR"] = (df["Wp_clean"] / df["Gp_clean"] * 1000).replace([float("inf"), -float("inf")], np.nan)
     return df
 
-diag_oil_data = compute_ratios(top_10_oil_data)
-diag_gas_data = compute_ratios(top_10_gas_data)
+diag_oil_data = prepare_diag_data(top_10_oil_data)
+diag_gas_data = prepare_diag_data(top_10_gas_data)
 
 GAS_PLOTS = {
-    "Qg vs Gp":  ("Gp", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
-    "WGR vs Gp": ("Gp", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
-    "GOR vs Gp": ("Gp", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
+    "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
+    "WGR vs Gp": ("Gp_clean", "WGR",      "Gp (km3)",  "WGR (m3/km3)"),
+    "GOR vs Gp": ("Gp_clean", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
 }
 OIL_PLOTS = {
-    "Qo vs Np":  ("Np", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
-    "WOR vs Np": ("Np", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
-    "GOR vs Np": ("Np", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
+    "Qo vs Np":  ("Np_clean", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
+    "WOR vs Np": ("Np_clean", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
+    "GOR vs Np": ("Np_clean", "GOR",      "Np (m3)",   "GOR (m3/m3)"),
 }
 
 col_left, col_right = st.columns(2)
@@ -277,7 +283,8 @@ def build_diagnostic_chart(
     all_y_values = []
 
     for i, well in enumerate(wells):
-        wd = data[data["sigla"] == well].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        # Data is pre-sorted by [sigla, date] and uses clean cumulative columns
+        wd = data[data["sigla"] == well].dropna(subset=[x_col, y_col])
         if wd.empty:
             continue
         fig.add_trace(go.Scatter(
