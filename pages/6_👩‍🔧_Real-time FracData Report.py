@@ -67,12 +67,12 @@ df_vmut = df_merged[
 ].copy()
 
 # Derived columns used across tabs
-df_vmut["fracspacing"]       = df_vmut["longitud_rama_horizontal_m"] / df_vmut["cantidad_fracturas"]
-df_vmut["prop_x_etapa"]      = df_vmut["arena_total_tn"] / df_vmut["cantidad_fracturas"]
-df_vmut["proppant_intensity"] = df_vmut["arena_total_tn"] / df_vmut["longitud_rama_horizontal_m"]
-df_vmut["AS_x_vol"]          = df_vmut["arena_total_tn"] / (df_vmut["agua_inyectada_m3"] / 1000)
-df_vmut["Qo_peak_x_etapa"]   = df_vmut["Qo_peak"] / df_vmut["cantidad_fracturas"]
-df_vmut["Qg_peak_x_etapa"]   = df_vmut["Qg_peak"] / df_vmut["cantidad_fracturas"]
+df_vmut["fracspacing"]        = df_vmut["longitud_rama_horizontal_m"] / df_vmut["cantidad_fracturas"]
+df_vmut["prop_x_etapa"]       = df_vmut["arena_total_tn"] / df_vmut["cantidad_fracturas"]
+df_vmut["proppant_intensity"]  = df_vmut["arena_total_tn"] / df_vmut["longitud_rama_horizontal_m"]
+df_vmut["AS_x_vol"]           = df_vmut["arena_total_tn"] / (df_vmut["agua_inyectada_m3"] / 1000)
+df_vmut["Qo_peak_x_etapa"]    = df_vmut["Qo_peak"] / df_vmut["cantidad_fracturas"]
+df_vmut["Qg_peak_x_etapa"]    = df_vmut["Qg_peak"] / df_vmut["cantidad_fracturas"]
 df_vmut = df_vmut.replace([np.inf, -np.inf], np.nan)
 
 df_vmut_dedup = df_vmut[df_vmut["longitud_rama_horizontal_m"] > 0].drop_duplicates(subset="sigla")
@@ -92,12 +92,8 @@ def build_evolution_chart(
     y_col: str,
     y_label: str,
     title: str,
-    extra_traces: list | None = None,
 ) -> go.Figure:
-    """
-    Builds a P50 + Max evolution line chart grouped by start_year.
-    Optionally accepts extra_traces (list of dicts) for secondary axes.
-    """
+    """Builds a P50 + Max evolution line chart grouped by start_year."""
     stats = (
         df.groupby("start_year")[y_col]
         .agg(p50="median", max="max")
@@ -117,18 +113,13 @@ def build_evolution_chart(
         mode="lines+markers", name="P50",
         line=dict(color="magenta"), marker=dict(size=8),
     ))
-    for i, row in stats.iterrows():
+    for _, row in stats.iterrows():
         fig.add_annotation(x=row["start_year"], y=row["max"],
                            text=f"{row['max']:.0f}", showarrow=False,
                            yshift=12, font=dict(color="blue", size=10))
         fig.add_annotation(x=row["start_year"], y=row["p50"],
                            text=f"{row['p50']:.0f}", showarrow=False,
                            yshift=-15, font=dict(color="magenta", size=10))
-
-    if extra_traces:
-        for t in extra_traces:
-            fig.add_trace(t)
-
     fig.update_layout(
         title=title,
         xaxis_title="Campaña",
@@ -153,7 +144,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 with tab1:
 
-    # Wells drilled per vintage
     wells_by_year = (
         df_vmut.groupby(["start_year", "tipopozoNEW"])["sigla"]
         .nunique()
@@ -189,14 +179,12 @@ with tab1:
 
     st.divider()
 
-    # Arena evolution
     df_con_frac = df_vmut[df_vmut["id_base_fractura_adjiv"].notna()].copy()
     pivot_arena = (
         df_con_frac.groupby("start_year")
         .agg(
-            arena_nacional =("arena_bombeada_nacional_tn",  "sum"),
+            arena_total    =("arena_total_tn", "sum"),
             arena_importada=("arena_bombeada_importada_tn", "sum"),
-            arena_total    =("arena_total_tn",              "sum"),
         )
         .reset_index()
     )
@@ -208,14 +196,12 @@ with tab1:
     fig_arena = go.Figure()
     fig_arena.add_trace(go.Scatter(
         x=pivot_arena["start_year"], y=pivot_arena["arena_total"],
-        mode="lines+markers", name="Arena Total (tn)",
-        line=dict(width=3),
+        mode="lines+markers", name="Arena Total (tn)", line=dict(width=3),
     ))
     fig_arena.add_trace(go.Scatter(
         x=pivot_arena["start_year"], y=pivot_arena["perc_importada"],
         mode="lines+markers", name="% Arena Importada",
-        line=dict(color="green", width=3),
-        yaxis="y2",
+        line=dict(color="green", width=3), yaxis="y2",
     ))
     fig_arena.update_layout(
         title=f"Arena Bombeada vs % Importada — {selected_company}",
@@ -239,8 +225,8 @@ with tab2:
         "Arena Bombeada (tn)":               ("arena_total_tn",              "Arena (tn)"),
         "Fracspacing (m)":                   ("fracspacing",                 "Fracspacing (m)"),
         "Agua Inyectada (km3)":              ("agua_inyectada_m3",           "Agua Inyectada (m3)"),
-        "Propante por Etapa (tn/etapa)":     ("prop_x_etapa",               "Prop x Etapa (tn/etapa)"),
-        "AS por Volumen Inyectado (tn/km3)": ("AS_x_vol",                   "AS x Vol (tn/km3)"),
+        "Propante por Etapa (tn/etapa)":     ("prop_x_etapa",                "Prop x Etapa (tn/etapa)"),
+        "AS por Volumen Inyectado (tn/km3)": ("AS_x_vol",                    "AS x Vol (tn/km3)"),
     }
 
     selected_completion = st.multiselect(
@@ -249,19 +235,12 @@ with tab2:
         default=["Longitud de Rama (m)", "Cantidad de Etapas", "Arena Bombeada (tn)"],
     )
 
-    # Fracspacing: split by fluid type — handle separately
-    FRACSPACING_KEY = "Fracspacing (m)"
-
     for chart_name in selected_completion:
         col, y_label = COMPLETION_CHARTS[chart_name]
 
-        if chart_name == FRACSPACING_KEY:
-            # Split by fluid type for fracspacing
+        if chart_name == "Fracspacing (m)":
             fig_fsp = go.Figure()
-            for fluid, color_p50, color_min in [
-                ("Gasífero",    "red",   "#F08080"),
-                ("Petrolífero", "green", "#90EE90"),
-            ]:
+            for fluid, color in [("Gasífero", "red"), ("Petrolífero", "green")]:
                 df_fluid = df_vmut_dedup[df_vmut_dedup["tipopozoNEW"] == fluid]
                 fsp_stats = (
                     df_fluid.groupby("start_year")[col]
@@ -273,18 +252,18 @@ with tab2:
                 fig_fsp.add_trace(go.Scatter(
                     x=fsp_stats["start_year"], y=fsp_stats["p50"],
                     mode="lines+markers", name=f"{fluid} P50",
-                    line=dict(color=color_p50),
+                    line=dict(color=color),
                 ))
                 fig_fsp.add_trace(go.Scatter(
                     x=fsp_stats["start_year"], y=fsp_stats["min"],
                     mode="lines+markers", name=f"{fluid} Min",
-                    line=dict(color=color_p50, dash="dash"),
+                    line=dict(color=color, dash="dash"),
                 ))
                 for _, row in fsp_stats.iterrows():
                     fig_fsp.add_annotation(
                         x=row["start_year"], y=row["p50"],
                         text=f"{row['p50']:.0f}", showarrow=False,
-                        yshift=12, font=dict(color=color_p50, size=10),
+                        yshift=12, font=dict(color=color, size=10),
                     )
             fig_fsp.update_layout(
                 title=f"Evolución del Fracspacing — {selected_company} (Fm. Vaca Muerta)",
@@ -308,10 +287,10 @@ with tab2:
 with tab3:
 
     PRODUCTIVITY_CHARTS = {
-        "Qo Pico — Petrolífero (m3/d)":          ("Petrolífero", "Qo_peak",        "Caudal de Petróleo (m3/d)"),
-        "Qg Pico — Gasífero (km3/d)":            ("Gasífero",    "Qg_peak",        "Caudal de Gas (km3/d)"),
-        "Qo Pico x Etapa — Petrolífero":         ("Petrolífero", "Qo_peak_x_etapa","Qo x Etapa (m3/d/etapa)"),
-        "Qg Pico x Etapa — Gasífero":            ("Gasífero",    "Qg_peak_x_etapa","Qg x Etapa (km3/d/etapa)"),
+        "Qo Pico — Petrolífero (m3/d)":  ("Petrolífero", "Qo_peak",         "Caudal de Petróleo (m3/d)"),
+        "Qg Pico — Gasífero (km3/d)":    ("Gasífero",    "Qg_peak",         "Caudal de Gas (km3/d)"),
+        "Qo Pico x Etapa — Petrolífero": ("Petrolífero", "Qo_peak_x_etapa", "Qo x Etapa (m3/d/etapa)"),
+        "Qg Pico x Etapa — Gasífero":    ("Gasífero",    "Qg_peak_x_etapa", "Qg x Etapa (km3/d/etapa)"),
     }
 
     selected_prod = st.multiselect(
@@ -327,10 +306,10 @@ with tab3:
         stats = (
             df_fluid.groupby("start_year")[metric_col]
             .agg(
-                max   ="max",
-                p50   =lambda x: np.percentile(x.dropna(), 50),
-                p10   =lambda x: np.percentile(x.dropna(), 10),
-                p90   =lambda x: np.percentile(x.dropna(), 90),
+                max=("max"),
+                p50=(lambda x: np.percentile(x.dropna(), 50)),
+                p10=(lambda x: np.percentile(x.dropna(), 10)),
+                p90=(lambda x: np.percentile(x.dropna(), 90)),
             )
             .reset_index()
         )
@@ -338,26 +317,17 @@ with tab3:
 
         color = "green" if fluid == "Petrolífero" else "red"
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=stats["start_year"], y=stats["max"],
-            mode="lines+markers", name="Max",
-            line=dict(dash="dot", color=color), marker=dict(size=8),
-        ))
-        fig.add_trace(go.Scatter(
-            x=stats["start_year"], y=stats["p50"],
-            mode="lines+markers", name="P50",
-            line=dict(color=color), marker=dict(size=8),
-        ))
-        fig.add_trace(go.Scatter(
-            x=stats["start_year"], y=stats["p90"],
-            mode="lines+markers", name="P90",
-            line=dict(color="black", width=1), marker=dict(size=8),
-        ))
-        fig.add_trace(go.Scatter(
-            x=stats["start_year"], y=stats["p10"],
-            mode="lines+markers", name="P10",
-            line=dict(color="black", width=1), marker=dict(size=8),
-        ))
+        for trace_name, y_data, dash, tc in [
+            ("Max", "max", "dot",   color),
+            ("P50", "p50", "solid", color),
+            ("P90", "p90", "solid", "black"),
+            ("P10", "p10", "solid", "black"),
+        ]:
+            fig.add_trace(go.Scatter(
+                x=stats["start_year"], y=stats[y_data],
+                mode="lines+markers", name=trace_name,
+                line=dict(color=tc, dash=dash), marker=dict(size=8),
+            ))
         for _, row in stats.iterrows():
             fig.add_annotation(x=row["start_year"], y=row["max"],
                                text=f"{row['max']:.0f}", showarrow=False,
@@ -379,9 +349,7 @@ with tab4:
 
     st.subheader("Perfiles de Pozo — Gráficos Diagnóstico")
 
-    available_siglas = sorted(
-        df_vmut["sigla"].dropna().unique()
-    )
+    available_siglas = sorted(df_vmut["sigla"].dropna().unique())
 
     if not available_siglas:
         st.info("No hay pozos disponibles para la empresa seleccionada.")
@@ -395,10 +363,8 @@ with tab4:
         if not selected_wells:
             st.caption("Seleccioná al menos un pozo para ver los perfiles.")
         else:
-            # Filter production data for selected wells
             well_prod = data_filtered[data_filtered["sigla"].isin(selected_wells)].copy()
 
-            # Determine fluid type per well for plot selection
             fluid_map = (
                 data_filtered[["sigla", "tipopozoNEW"]]
                 .drop_duplicates(subset="sigla")
@@ -415,7 +381,6 @@ with tab4:
             well_prod["WOR"] = (well_prod["Wp_clean"] / well_prod["Np_clean"]).replace([np.inf, -np.inf], np.nan)
             well_prod["WGR"] = (well_prod["Wp_clean"] / well_prod["Gp_clean"] * 1000).replace([np.inf, -np.inf], np.nan)
 
-            # Determine available plots based on fluid types of selected wells
             fluids_selected = set(fluid_map.get(w) for w in selected_wells)
             GAS_PLOTS = {
                 "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
@@ -462,7 +427,6 @@ with tab4:
                         ))
                         all_y.extend(wd[y_col].tolist())
 
-                    # Robust y-axis
                     clean_y = pd.Series(all_y).replace([np.inf, -np.inf], np.nan).dropna()
                     y_range = (
                         [max(0, np.percentile(clean_y, 1)), np.percentile(clean_y, 99) * 1.10]
