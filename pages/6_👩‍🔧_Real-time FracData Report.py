@@ -37,7 +37,7 @@ st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 st.sidebar.image(Image.open("McCain.png"))
 st.sidebar.caption(
     "Los pozos clasificados como Otro tipo son reclasificados como "
-    "Gasiferos o Petroliferos usando el criterio de GOR segun McCain."
+    "Gasíferos o Petrolíferos usando el criterio de GOR segun McCain."
 )
 
 
@@ -72,7 +72,7 @@ df_vmut = df_vmut.replace([np.inf, -np.inf], np.nan)
 df_vmut_dedup = df_vmut[df_vmut["longitud_rama_horizontal_m"] > 0].drop_duplicates(subset="sigla")
 
 LEGEND_TOP  = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
-FLUID_COLORS = {"Petrolifero": "green", "Gasifero": "red"}
+FLUID_COLORS = {"Petrolífero": "green", "Gasífero": "red"}
 
 
 # ── Shared chart helper — evolution lines ─────────────────────────────────────
@@ -171,7 +171,7 @@ with tab1:
     )
 
     fig_wells = go.Figure()
-    for fluid, color in [("Petrolifero", "green"), ("Gasifero", "red")]:
+    for fluid, color in [("Petrolífero", "green"), ("Gasífero", "red")]:
         if fluid not in wells_by_year.columns:
             continue
         fig_wells.add_trace(go.Scatter(
@@ -282,7 +282,7 @@ with tab2:
             build_evolution_chart(
                 df_c, metric, title, y_label,
                 split_col="tipopozoNEW",
-                split_colors={"Petrolifero": "green", "Gasifero": "red"},
+                split_colors={"Petrolífero": "green", "Gasífero": "red"},
             ),
             use_container_width=True,
         )
@@ -294,28 +294,28 @@ with tab2:
 with tab3:
 
     PRODUCTIVITY_CHARTS = {
-        "Qo Pico - Petrolifero": (
-            df_vmut[df_vmut["tipopozoNEW"] == "Petrolifero"],
+        "Qo Pico - Petrolífero": (
+            df_vmut[df_vmut["tipopozoNEW"] == "Petrolífero"],
             "Qo_peak",
-            "Tipo Petrolifero: Evolucion de Caudal Pico",
+            "Tipo Petrolífero: Evolucion de Caudal Pico",
             "Caudal de Petroleo (m3/d)",
         ),
-        "Qg Pico - Gasifero": (
-            df_vmut[df_vmut["tipopozoNEW"] == "Gasifero"],
+        "Qg Pico - Gasífero": (
+            df_vmut[df_vmut["tipopozoNEW"] == "Gasífero"],
             "Qg_peak",
-            "Tipo Gasifero: Evolucion de Caudal Pico",
+            "Tipo Gasífero: Evolucion de Caudal Pico",
             "Caudal de Gas (km3/d)",
         ),
-        "Qo Pico x Etapa - Petrolifero": (
-            df_vmut[(df_vmut["tipopozoNEW"] == "Petrolifero") & (df_vmut["start_year"] > 2012)],
+        "Qo Pico x Etapa - Petrolífero": (
+            df_vmut[(df_vmut["tipopozoNEW"] == "Petrolífero") & (df_vmut["start_year"] > 2012)],
             "Qo_peak_x_etapa",
-            "Tipo Petrolifero: Evolucion de Caudal Pico por Etapa",
+            "Tipo Petrolífero: Evolucion de Caudal Pico por Etapa",
             "Caudal de Petroleo (m3/d/etapa)",
         ),
-        "Qg Pico x Etapa - Gasifero": (
-            df_vmut[(df_vmut["tipopozoNEW"] == "Gasifero") & (df_vmut["start_year"] > 2012)],
+        "Qg Pico x Etapa - Gasífero": (
+            df_vmut[(df_vmut["tipopozoNEW"] == "Gasífero") & (df_vmut["start_year"] > 2012)],
             "Qg_peak_x_etapa",
-            "Tipo Gasifero: Evolucion de Caudal Pico por Etapa",
+            "Tipo Gasífero: Evolucion de Caudal Pico por Etapa",
             "Caudal de Gas (km3/d/etapa)",
         ),
     }
@@ -379,7 +379,7 @@ with tab4:
         well_data["WOR"] = (well_data["Wp_clean"] / well_data["Np_clean"]).replace([np.inf, -np.inf], np.nan)
         well_data["WGR"] = (well_data["Wp_clean"] / well_data["Gp_clean"] * 1000).replace([np.inf, -np.inf], np.nan)
 
-        if selected_fluid == "Gasifero":
+        if selected_fluid == "Gasífero":
             DIAG_PLOTS = {
                 "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
                 "GOR vs Gp": ("Gp_clean", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
