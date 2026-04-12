@@ -1,1462 +1,482 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
-# Load and sort the data
-# @st.cache_data
-# def load_and_sort_data(dataset_url):
-#     df = pd.read_csv(dataset_url, usecols=COLUMNS)
-#     df['date'] = pd.to_datetime(df['anio'].astype(str) + '-' + df['mes'].astype(str) + '-1')
-#     df['gas_rate'] = df['prod_gas'] / df['tef']
-#     df['oil_rate'] = df['prod_pet'] / df['tef']
-#     data_sorted = df.sort_values(by=['sigla', 'fecha_data'], ascending=True)
-#     return data_sorted
-
-# URL of the dataset
-#dataset_url = "http://datos.energia.gob.ar/dataset/c846e79c-026c-4040-897f-1ad3543b407c/resource/b5b58cdc-9e07-41f9-b392-fb9ec68b0725/download/produccin-de-pozos-de-gas-y-petrleo-no-convencional.csv"
-
-# Load and sort the data using the cached function
-#data_sorted = load_and_sort_data(dataset_url)
+from utils import (
+    COMPANY_REPLACEMENTS,
+    get_fluid_classification,
+    load_frac_data,
+    create_summary_dataframe,
+)
 
 
-#Verificamos si los datos ya fueron cargados en la Main Page
-if 'df' in st.session_state:
-    # Recuperamos los datos de la memoria sin esperar un segundo
-    data_sorted = st.session_state['df']
-    data_sorted['date'] = pd.to_datetime(data_sorted['anio'].astype(str) + '-' + data_sorted['mes'].astype(str) + '-1')
-    data_sorted['gas_rate'] = data_sorted['prod_gas'] / data_sorted['tef']
-    data_sorted['oil_rate'] = data_sorted['prod_pet'] / data_sorted['tef']
-    data_sorted = data_sorted.sort_values(by=['sigla', 'date'], ascending=True)
-    
+# ── Session state ─────────────────────────────────────────────────────────────
+
+if "df" in st.session_state:
+    data_sorted = st.session_state["df"]
+    data_sorted["date"]       = pd.to_datetime(data_sorted["anio"].astype(str) + "-" + data_sorted["mes"].astype(str) + "-1")
+    data_sorted["gas_rate"]   = data_sorted["prod_gas"]  / data_sorted["tef"]
+    data_sorted["oil_rate"]   = data_sorted["prod_pet"]  / data_sorted["tef"]
+    data_sorted["water_rate"] = data_sorted["prod_agua"] / data_sorted["tef"]
+    data_sorted               = data_sorted.sort_values(by=["sigla", "date"], ascending=True)
+    data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
+    data_sorted               = get_fluid_classification(data_sorted)
     st.info("Utilizando datos recuperados de la memoria.")
-    
 else:
     st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la Página Principal.")
-
-# Replace company names in production data
-replacement_dict = {
-    'PAN AMERICAN ENERGY (SUCURSAL ARGENTINA) LLC': 'PAN AMERICAN ENERGY',
-    'PAN AMERICAN ENERGY SL': 'PAN AMERICAN ENERGY',
-    'VISTA ENERGY ARGENTINA SAU': 'VISTA',
-    'Vista Oil & Gas Argentina SA': 'VISTA',
-    'VISTA OIL & GAS ARGENTINA SAU': 'VISTA',
-    'WINTERSHALL DE ARGENTINA S.A.': 'WINTERSHALL',
-    'WINTERSHALL ENERGÍA S.A.': 'WINTERSHALL'
-}
-data_sorted['empresaNEW'] = data_sorted['empresa'].replace(replacement_dict)
-
-# Sidebar filters
-st.header(f":blue[Reporte Extensivo de Completación y Producción en Vaca Muerta]")
-image = Image.open('Vaca Muerta rig.png')
-st.sidebar.image(image)
-
-# Filter out rows where TEF is zero for calculating metrics
-data_filtered = data_sorted[(data_sorted['tef'] > 0)]
-
-# Find the latest date in the dataset
-latest_date = data_filtered['date'].max()
-
-from dateutil.relativedelta import relativedelta
-
-# Find the latest date in the dataset
-latest_date_non_official = data_filtered['date'].max()
-
-# Subtract 1 month from the latest date
-latest_date = latest_date_non_official - relativedelta(months=1)
-
-print(latest_date)
-
-# Filter the dataset to include only rows from the latest date
-latest_data = data_filtered[data_filtered['date'] == latest_date]
+    st.stop()
 
 
-# ------------------------ DATA CLEANING ------------------------
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 
-@st.cache_data
-# Load and preprocess the fracture data
-def load_and_sort_data_frac(dataset_url):
-    df_frac = pd.read_csv(dataset_url)
-    return df_frac
+st.header(":blue[Reporte Extensivo de Completación y Producción en Vaca Muerta]")
+st.sidebar.image(Image.open("Vaca Muerta rig.png"))
+st.sidebar.image(Image.open("McCain.png"))
+st.sidebar.caption(
+    "Nota: Los pozos clasificados como 'Otro tipo' son reclasificados como "
+    "'Gasíferos' o 'Petrolíferos' usando el criterio de GOR según McCain."
+)
 
-# URL of the fracture dataset
-dataset_frac_url = "http://datos.energia.gob.ar/dataset/71fa2e84-0316-4a1b-af68-7f35e41f58d7/resource/2280ad92-6ed3-403e-a095-50139863ab0d/download/datos-de-fractura-de-pozos-de-hidrocarburos-adjunto-iv-actualizacin-diaria.csv"
+selected_company = st.sidebar.selectbox(
+    "Seleccionar empresa:",
+    options=sorted(data_sorted["empresaNEW"].unique()),
+)
 
-# Load the fracture data
-df_frac = load_and_sort_data_frac(dataset_frac_url)
-
-
-# Create a new column for the total amount of arena (sum of national and imported arena)
-df_frac['arena_total_tn'] = df_frac['arena_bombeada_nacional_tn'] + df_frac['arena_bombeada_importada_tn']
-
-# Apply the cut-off conditions:
-# longitud_rama_horizontal_m > 100
-# cantidad_fracturas > 6
-# arena_total_tn > 100
-df_frac = df_frac[
-    (df_frac['longitud_rama_horizontal_m'] > 100) &
-    (df_frac['cantidad_fracturas'] > 6) &
-    (df_frac['arena_total_tn'] > 100)
+data_filtered = data_sorted[
+    (data_sorted["tef"] > 0) &
+    (data_sorted["empresaNEW"] == selected_company)
 ]
 
-# Check the filtered data
-print(df_frac.info())
 
-# Define the columns to check for outliers (now using 'arena_total_tn' as the total arena)
-columns_to_check = [
-    'longitud_rama_horizontal_m',
-    'cantidad_fracturas',
-    'arena_total_tn',
-]
+# ── Data preparation ──────────────────────────────────────────────────────────
 
-# ------------------------ Fluido segun McCain ------------------------
-
-st.sidebar.caption("")
-
-st.sidebar.caption("Nota: Para excluir los pozos clasificados como 'Otro tipo', \
-se crea una nueva columna que utiliza la definición de fluido basada \
-en el criterio de GOR según McCain. Esto permite reclasificar estos pozos como \
-'Gasíferos' o 'Petrolíferos' de manera más precisa")
-
-image = Image.open('McCain.png')
-st.sidebar.image(image)
-
-# Step 1: Create a Pivot Table with Cumulated Values
-pivot_table = data_filtered.pivot_table(
-    values=['Np', 'Gp', 'Wp'],
-    index=['sigla'],
-    aggfunc={'Np': 'max', 'Gp': 'max', 'Wp': 'max'}
-)
-
-print(pivot_table.info())
-
-# Step 2: Create a New DataFrame with GOR
-cum_df = pivot_table.reset_index()
-cum_df['GOR'] = (cum_df['Gp'] / cum_df['Np']) * 1000
-cum_df['GOR'] = cum_df['GOR'].fillna(100000)  # Handle NaN values
-
-# Step 3: Add a new column "Fluido McCain" based on conditions
-cum_df['Fluido McCain'] = cum_df.apply(
-    lambda row: 'Gasífero' if row['Np'] == 0 or row['GOR'] > 3000 else 'Petrolífero',
-    axis=1
-)
-
-# Step 4: Ensure `tipopozo` is unique for each `sigla` and merge it
-tipopozo_unique = data_filtered[['sigla', 'tipopozo']].drop_duplicates(subset=['sigla'])
-cum_df = cum_df.merge(tipopozo_unique, on='sigla', how='left')
-
-# Step 5: Create the 'tipopozoNEW' column based on the 'tipopozo' and 'Fluido McCain'
-cum_df['tipopozoNEW'] = cum_df.apply(
-    lambda row: row['Fluido McCain'] if row['tipopozo'] == 'Otro tipo' else row['tipopozo'],
-    axis=1
-)
-
-# Step 6: Calculate WOR and WGR
-cum_df['WOR'] = cum_df['Wp'] / cum_df['Np']
-cum_df['WOR'] = cum_df['WOR'].fillna(100000)  # Handle NaN values
-cum_df['WGR'] = (cum_df['Wp'] / cum_df['Gp']) * 1000
-cum_df['WGR'] = cum_df['WGR'].fillna(100000)  # Handle NaN values
-
-# Step 7: Create the final table with the desired columns
-cum_df = cum_df[['sigla', 'WGR', 'WOR', 'GOR', 'Fluido McCain', 'tipopozoNEW']]
-
-# Step 8: Merge `tipopozoNEW` back into `data_filtered`
-data_filtered = data_filtered.merge(
-    cum_df[['sigla', 'tipopozoNEW']],
-    on='sigla',
-    how='left'
-)
-
-# Display the updated data_filtered
-print(data_filtered.columns)
-print(cum_df.columns)
-
-# -----------------------------------------------
-
-# Merge the dataframes on 'sigla'
-df_merged = pd.merge(
-    df_frac,
-    cum_df,
-    on='sigla',
-    how='outer'
-).drop_duplicates()
-
-print(df_merged.info())
-
-# --- Tabla consolidada por siglas para usar en reporte ---------
-
-# Calculate additional metrics and create the new DataFrame
-def create_summary_dataframe(data_filtered):
-    # Calculate Qo peak and Qg peak (maximum oil and gas rates)
-    data_filtered['Qo_peak'] = data_filtered[['sigla','oil_rate']].groupby('sigla').transform('max') 
-    data_filtered['Qg_peak'] = data_filtered[['sigla','gas_rate']].groupby('sigla').transform('max') 
-    
-    # Determine the starting year for each well
-    data_filtered['start_year'] = data_filtered.groupby('sigla')['anio'].transform('min')
-
-    # Calculate EUR at 30, 90, and 180 days based on dates
-    def calculate_eur(group):
-        group = group.sort_values('date')  # Ensure the data is sorted by date
-        
-        # Get the start date for the group
-        start_date = group['date'].iloc[0]
-        
-        # Define target dates
-        target_dates = {
-            'EUR_30': start_date + relativedelta(days=30),
-            'EUR_90': start_date + relativedelta(days=90),
-            'EUR_180': start_date + relativedelta(days=180)
-        }
-        
-        # Initialize EUR columns
-        for key, target_date in target_dates.items():
-            group[key] = group.loc[
-                group['date'] <= target_date,
-                'Np' if group['tipopozoNEW'].iloc[0] == 'Petrolífero' else 'Gp'
-            ].max()
-        
-        return group
-
-    data_filtered = data_filtered.groupby('sigla', group_keys=False).apply(calculate_eur)
-    
-    # Create the new DataFrame with selected columns
-    summary_df = data_filtered.groupby('sigla').agg({
-        'date': 'first',
-        'start_year': 'first',
-        'empresaNEW': 'first',
-        'formprod': 'first',
-        'sub_tipo_recurso': 'first',
-        'Np': 'max',
-        'Gp': 'max',
-        'Wp': 'max',
-        'Qo_peak': 'max',
-        'Qg_peak': 'max',
-        'EUR_30': 'max',
-        'EUR_90': 'max',
-        'EUR_180': 'max'
-    }).reset_index()
-    
-    return summary_df
-
-# Generate the summary DataFrame
+df_frac    = load_frac_data()
 summary_df = create_summary_dataframe(data_filtered)
 
+df_merged = (
+    pd.merge(df_frac, summary_df, on="sigla", how="outer")
+    .drop_duplicates()
+)
 
-print(summary_df.info())
-print(summary_df.columns)
+df_vmut = df_merged[
+    (df_merged["formprod"]         == "VMUT") &
+    (df_merged["sub_tipo_recurso"] == "SHALE")
+].copy()
 
-# -----------------------------------------------
+# Derived columns used across tabs
+df_vmut["fracspacing"]       = df_vmut["longitud_rama_horizontal_m"] / df_vmut["cantidad_fracturas"]
+df_vmut["prop_x_etapa"]      = df_vmut["arena_total_tn"] / df_vmut["cantidad_fracturas"]
+df_vmut["proppant_intensity"] = df_vmut["arena_total_tn"] / df_vmut["longitud_rama_horizontal_m"]
+df_vmut["AS_x_vol"]          = df_vmut["arena_total_tn"] / (df_vmut["agua_inyectada_m3"] / 1000)
+df_vmut["Qo_peak_x_etapa"]   = df_vmut["Qo_peak"] / df_vmut["cantidad_fracturas"]
+df_vmut["Qg_peak_x_etapa"]   = df_vmut["Qg_peak"] / df_vmut["cantidad_fracturas"]
+df_vmut = df_vmut.replace([np.inf, -np.inf], np.nan)
 
-# Merge the dataframes on 'sigla'
-df_merged_final = pd.merge(
-    df_merged,
-    summary_df,
-    on='sigla',
-    how='outer'
-).drop_duplicates()
-
-# Filter out rows where 'id_base_fractura_adjiv' is null
-# df_merged_final = df_merged_final[df_merged_final['id_base_fractura_adjiv'].notna()] 
-
-# Check the dataframe info and columns
-print(df_merged_final.info())
-print(df_merged_final.columns)
-
-# -----------------------------------------------
-
-# Only keep VMUT as the target formation and filter for SHALE resource type
-df_merged_VMUT = df_merged_final[
-    (df_merged_final['formprod'] == 'VMUT') & (df_merged_final['sub_tipo_recurso'] == 'SHALE')
-]
+df_vmut_dedup = df_vmut[df_vmut["longitud_rama_horizontal_m"] > 0].drop_duplicates(subset="sigla")
 
 
-# ----------------------- Pivot Tables + Plots ------------
+# ── Shared layout constants ───────────────────────────────────────────────────
 
-# Create tabs
-tab1, tab2, tab3 = st.tabs(["Indicadores de Actividad", "Estrategia de Completación", "Productividad"])
+LEGEND_TOP = dict(
+    orientation="h", yanchor="bottom", y=1.0, xanchor="center", x=0.5
+)
 
-# --- Tab 1: Indicadores de Actividad ---
+
+# ── Shared chart helper — evolution line chart ────────────────────────────────
+
+def build_evolution_chart(
+    df: pd.DataFrame,
+    y_col: str,
+    y_label: str,
+    title: str,
+    extra_traces: list | None = None,
+) -> go.Figure:
+    """
+    Builds a P50 + Max evolution line chart grouped by start_year.
+    Optionally accepts extra_traces (list of dicts) for secondary axes.
+    """
+    stats = (
+        df.groupby("start_year")[y_col]
+        .agg(p50="median", max="max")
+        .reset_index()
+        .dropna()
+    )
+    stats["start_year"] = stats["start_year"].astype(int).astype(str)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=stats["start_year"], y=stats["max"],
+        mode="lines+markers", name="Max",
+        line=dict(color="blue", dash="dash"), marker=dict(size=8),
+    ))
+    fig.add_trace(go.Scatter(
+        x=stats["start_year"], y=stats["p50"],
+        mode="lines+markers", name="P50",
+        line=dict(color="magenta"), marker=dict(size=8),
+    ))
+    for i, row in stats.iterrows():
+        fig.add_annotation(x=row["start_year"], y=row["max"],
+                           text=f"{row['max']:.0f}", showarrow=False,
+                           yshift=12, font=dict(color="blue", size=10))
+        fig.add_annotation(x=row["start_year"], y=row["p50"],
+                           text=f"{row['p50']:.0f}", showarrow=False,
+                           yshift=-15, font=dict(color="magenta", size=10))
+
+    if extra_traces:
+        for t in extra_traces:
+            fig.add_trace(t)
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Campaña",
+        yaxis_title=y_label,
+        template="plotly_white",
+        legend=LEGEND_TOP,
+    )
+    return fig
+
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+
+tab1, tab2, tab3, tab4 = st.tabs([
+    "Indicadores de Actividad",
+    "Estrategia de Completación",
+    "Productividad",
+    "Perfiles de Pozo",
+])
+
+
+# ── Tab 1: Activity indicators ────────────────────────────────────────────────
+
 with tab1:
 
-    #------------------
-    # Group by 'start_year' and 'tipopozoNEW', then count the number of wells
-    table_wells_by_start_year = (
-        df_merged_VMUT.groupby(['start_year', 'tipopozoNEW'])['sigla']
+    # Wells drilled per vintage
+    wells_by_year = (
+        df_vmut.groupby(["start_year", "tipopozoNEW"])["sigla"]
         .nunique()
-        .reset_index(name='count')
+        .reset_index(name="count")
     )
-    
-    # Pivot the table to display start years as rows and 'tipopozoNEW' as columns
-    table_wells_pivot = table_wells_by_start_year.pivot_table(
-        index='start_year', columns='tipopozoNEW', values='count', fill_value=0
-    )
-    
-    # Drop unwanted columns
-    table_wells_pivot = table_wells_pivot.drop(
-        columns=['Inyección de Agua', 'Inyección de Gas'], errors='ignore'
-    )
-    
-    # Create a Plotly figure for line plot
-    fig = go.Figure()
-    
-    # Add petrolífero wells (green line)
-    if 'Petrolífero' in table_wells_pivot.columns:
-        fig.add_trace(go.Scatter(
-            x=table_wells_pivot.index,
-            y=table_wells_pivot['Petrolífero'],
-            mode='lines+markers',
-            name='Petrolífero',
-            line=dict(color='green'),
-            marker=dict(size=8),
-        ))
-        # Add annotations for each point
-        for x, y in zip(table_wells_pivot.index, table_wells_pivot['Petrolífero']):
-            fig.add_annotation(
-                x=x,
-                y=y,
-                text=str(int(y)),  # Convert to integer and remove decimals
-                showarrow=False,  # Disable the arrow
-                yshift=15,  # Shift the annotation above the point
-                font=dict(size=10, color="green")
-            )
-    
-    # Add gasífero wells (red line)
-    if 'Gasífero' in table_wells_pivot.columns:
-        fig.add_trace(go.Scatter(
-            x=table_wells_pivot.index,
-            y=table_wells_pivot['Gasífero'],
-            mode='lines+markers',
-            name='Gasífero',
-            line=dict(color='red'),
-            marker=dict(size=8),
-        ))
-        # Add annotations for each point
-        for x, y in zip(table_wells_pivot.index, table_wells_pivot['Gasífero']):
-            fig.add_annotation(
-                x=x,
-                y=y,
-                text=str(int(y)),  # Convert to integer and remove decimals
-                showarrow=False,  # Disable the arrow
-                yshift=15,  # Shift the annotation above the point
-                font=dict(size=10, color="red")
-            )
-    
-    
-    # Update layout with labels and title
-    fig.update_layout(
-        title='Pozos enganchados por campaña (Fm. Vaca Muerta)',
-        xaxis_title='Año de Puesta en Marcha',
-        yaxis_title='Cantidad de Pozos',
-        legend_title='Tipo de Pozo',
-        template='plotly_white',
-    )
-    
-    # Show the plot
-    #fig.show()
-    
-    st.plotly_chart(fig, use_container_width=True)
+    pivot_wells = wells_by_year.pivot_table(
+        index="start_year", columns="tipopozoNEW", values="count", fill_value=0
+    ).drop(columns=["Inyección de Agua", "Inyección de Gas"], errors="ignore")
 
-    #------------------
+    fig_activity = go.Figure()
+    for fluid, color in [("Petrolífero", "green"), ("Gasífero", "red")]:
+        if fluid not in pivot_wells.columns:
+            continue
+        fig_activity.add_trace(go.Scatter(
+            x=pivot_wells.index, y=pivot_wells[fluid],
+            mode="lines+markers", name=fluid,
+            line=dict(color=color), marker=dict(size=8),
+        ))
+        for x, y in zip(pivot_wells.index, pivot_wells[fluid]):
+            fig_activity.add_annotation(
+                x=x, y=y, text=str(int(y)),
+                showarrow=False, yshift=15,
+                font=dict(size=10, color=color),
+            )
+    fig_activity.update_layout(
+        title=f"Pozos enganchados por campaña — {selected_company} (Fm. Vaca Muerta)",
+        xaxis_title="Año de Puesta en Marcha",
+        yaxis_title="Cantidad de Pozos",
+        legend_title="Tipo de Pozo",
+        template="plotly_white",
+    )
+    st.plotly_chart(fig_activity, use_container_width=True)
 
     st.divider()
-    
-    import streamlit as st
-    import pandas as pd
-    import plotly.graph_objects as go
-    
-    # Filtrar solo pozos que tienen datos de fractura
-    df_con_frac = df_merged_VMUT[df_merged_VMUT['id_base_fractura_adjiv'].notna()].copy()
-    
-    # Luego agrupás por año o empresa como quieras
-    pivot_table_arena = df_con_frac.groupby('start_year').agg({
-        'arena_bombeada_nacional_tn': 'sum',
-        'arena_bombeada_importada_tn': 'sum',
-        'arena_total_tn': 'sum',
-    }).reset_index()
 
-    
-    # Calculate %Arena Importada
-    pivot_table_arena['perc_arena_importada'] = (pivot_table_arena['arena_bombeada_importada_tn'] / pivot_table_arena['arena_total_tn']) * 100
-    
-    # Calculate average arena bombeada (average of national and imported)
-    pivot_table_arena['avg_arena_bombeada'] = pivot_table_arena[['arena_total_tn']].median(axis=1)
-    
-    pivot_table_arena['start_year'] = pivot_table_arena['start_year'].astype(int).astype(str)
-    
-    # Round values to avoid decimals in the final output for all numeric columns
-    pivot_table_arena['arena_bombeada_nacional_tn'] = pivot_table_arena['arena_bombeada_nacional_tn'].astype(int)
-    pivot_table_arena['arena_bombeada_importada_tn'] = pivot_table_arena['arena_bombeada_importada_tn'].astype(int)
-    pivot_table_arena['arena_total_tn'] = pivot_table_arena['arena_total_tn'].astype(int)
-    pivot_table_arena['perc_arena_importada'] = pivot_table_arena['perc_arena_importada'].round(0).astype(int)
-    pivot_table_arena['avg_arena_bombeada'] = pivot_table_arena['avg_arena_bombeada'].round(0).astype(int)
-    
-    
-    # Plot for Total Arena Bombeada, Average Arena Bombeada per Year, and % Arena Importada
-    fig_arena_plot = go.Figure()
-    
-    # Plot Total Arena Bombeada per Year
-    fig_arena_plot.add_trace(go.Scatter(
-        x=pivot_table_arena['start_year'],
-        y=pivot_table_arena['arena_total_tn'],
-        mode='lines+markers',
-        name='Arena Total (tn)',
-        line=dict(dash='solid', width=3)
+    # Arena evolution
+    df_con_frac = df_vmut[df_vmut["id_base_fractura_adjiv"].notna()].copy()
+    pivot_arena = (
+        df_con_frac.groupby("start_year")
+        .agg(
+            arena_nacional =("arena_bombeada_nacional_tn",  "sum"),
+            arena_importada=("arena_bombeada_importada_tn", "sum"),
+            arena_total    =("arena_total_tn",              "sum"),
+        )
+        .reset_index()
+    )
+    pivot_arena["perc_importada"] = (
+        pivot_arena["arena_importada"] / pivot_arena["arena_total"] * 100
+    ).round(1)
+    pivot_arena["start_year"] = pivot_arena["start_year"].astype(int).astype(str)
+
+    fig_arena = go.Figure()
+    fig_arena.add_trace(go.Scatter(
+        x=pivot_arena["start_year"], y=pivot_arena["arena_total"],
+        mode="lines+markers", name="Arena Total (tn)",
+        line=dict(width=3),
     ))
-    
-    # Plot % Arena Importada on secondary axis
-    fig_arena_plot.add_trace(go.Scatter(
-        x=pivot_table_arena['start_year'],
-        y=pivot_table_arena['perc_arena_importada'],
-        mode='lines+markers',
-        name='% Arena Importada',
-        line=dict(color='green', width=3),
-        yaxis='y2'
+    fig_arena.add_trace(go.Scatter(
+        x=pivot_arena["start_year"], y=pivot_arena["perc_importada"],
+        mode="lines+markers", name="% Arena Importada",
+        line=dict(color="green", width=3),
+        yaxis="y2",
     ))
-    
-    fig_arena_plot.update_layout(
-        title="Total Arena Bombeada vs % Arena Importada por Año",
+    fig_arena.update_layout(
+        title=f"Arena Bombeada vs % Importada — {selected_company}",
         xaxis_title="Campaña",
         yaxis_title="Arena Bombeada (tn)",
-        yaxis2=dict(
-            title="% Arena Importada",
-            overlaying="y",
-            side="right"
-        ),
+        yaxis2=dict(title="% Arena Importada", overlaying="y", side="right"),
         template="plotly_white",
-        legend=dict(
-            orientation='h',  # Horizontal orientation
-            yanchor='bottom',  # Aligns the legend to the bottom of the plot
-            y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-            xanchor='center',  # Aligns the legend to the center of the plot
-            x=0.5 # Centers the legend horizontally
-        )
+        legend=LEGEND_TOP,
     )
-    
-    
-    # Display the DataFrame in Streamlit
     st.write("### Evolución de Arena Bombeada")
+    st.plotly_chart(fig_arena, use_container_width=True)
 
-    
-    # fig_arena_plot.show()
-    st.plotly_chart(fig_arena_plot)
 
-# --- Tab 2: Estrategia de Completación ---
+# ── Tab 2: Completion strategy ────────────────────────────────────────────────
+
 with tab2:
-  
-    # ----------------
 
-    import plotly.graph_objects as go
-    import streamlit as st
-    
-    # Remove rows where longitud_rama_horizontal_m is zero and drop duplicates based on 'sigla'
-    df_merged_VMUT_filtered = df_merged_VMUT[df_merged_VMUT['longitud_rama_horizontal_m'] > 0].drop_duplicates(subset='sigla')
-    
-    # Aggregate data to calculate min, median, max, avg, and standard deviation by year and type of well (tipopozoNEW)
-    statistics = df_merged_VMUT_filtered.groupby(['start_year']).agg(
-        min_lenght=('longitud_rama_horizontal_m', 'min'),
-        avg_lenght=('longitud_rama_horizontal_m', 'median'),
-        max_lenght=('longitud_rama_horizontal_m', 'max'),
-        std_lenght=('longitud_rama_horizontal_m', 'std'),
-    ).reset_index()
-    
-    # Round the values to 0 decimal places
-    statistics['min_lenght'] = statistics['min_lenght'].round(0)
-    statistics['avg_lenght'] = statistics['avg_lenght'].round(0)
-    statistics['max_lenght'] = statistics['max_lenght'].round(0)
-    statistics['std_lenght'] = statistics['std_lenght'].round(0)
-    
-    
-    # Plot the pivot tables and line plots for max_lenght and avg_lenght
-    fig = go.Figure()
-    
-    # Add Petrolífero wells - Max length
-    fig.add_trace(go.Scatter(
-        x=statistics['start_year'],
-        y=statistics['max_lenght'],
-        mode='lines+markers',
-        name='Max',
-        line=dict(color='blue', dash='dash'),
-        marker=dict(size=8),
-    ))
-    
-    
-    # Add Petrolífero wells - Avg length
-    fig.add_trace(go.Scatter(
-        x=statistics['start_year'],
-        y=statistics['avg_lenght'],
-        mode='lines+markers',
-        name='P50',
-        line=dict(color='magenta'),
-        marker=dict(size=8),
-    ))
+    COMPLETION_CHARTS = {
+        "Longitud de Rama (m)":              ("longitud_rama_horizontal_m", "Longitud de Rama (m)"),
+        "Cantidad de Etapas":                ("cantidad_fracturas",          "Etapas"),
+        "Arena Bombeada (tn)":               ("arena_total_tn",              "Arena (tn)"),
+        "Fracspacing (m)":                   ("fracspacing",                 "Fracspacing (m)"),
+        "Agua Inyectada (km3)":              ("agua_inyectada_m3",           "Agua Inyectada (m3)"),
+        "Propante por Etapa (tn/etapa)":     ("prop_x_etapa",               "Prop x Etapa (tn/etapa)"),
+        "AS por Volumen Inyectado (tn/km3)": ("AS_x_vol",                   "AS x Vol (tn/km3)"),
+    }
 
-    # Add annotations for Max Etapas
-    for i, row in statistics.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['max_lenght'],
-            text=f"{row['max_lenght']:.0f}",  # Zero decimals
-            showarrow=False,
-            yshift=15,  # Position above the point
-            font=dict(color="blue", size=10)
-        )
-
-    # Add annotations for Avg Etapas
-    for i, row in statistics.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['avg_lenght'],
-            text=f"{row['avg_lenght']:.0f}",  # Zero decimals
-            showarrow=False,
-            yshift=15,  # Position above the point
-            font=dict(color="magenta", size=10)
-        )
-
-    
-    # Update layout with labels, title, and legend below the plot
-    fig.update_layout(
-        title='Evolución de la Rama Lateral (Fm Vaca Muerta)',
-        xaxis_title='Campaña',
-        yaxis_title='Longitud de Rama (metros)',
-        template='plotly_white',
-        legend=dict(
-        orientation='h',  # Horizontal orientation
-        yanchor='bottom',  # Aligns the legend to the top of the plot (bottom of the legend box)
-        y=1.0,  # Adjusts the position of the legend (move it slightly above the plot)
-        xanchor='center',  # Aligns the legend to the center of the plot
-        x=0.5  # Centers the legend horizontally
-    )
-    
-    )
-    
-    # Show the plot
-    st.plotly_chart(fig, use_container_width=True)
-
-
-    #----------------
-    # Aggregate data to calculate max and avg by year
-    statistics = df_merged_VMUT_filtered.groupby(['start_year']).agg(
-        max_etapas=('cantidad_fracturas', 'max'),
-        avg_etapas=('cantidad_fracturas', 'median')
-    ).reset_index()
-    
-    # Create the Plotly figure
-    fig = go.Figure()
-    
-    # Add Max Etapas line
-    fig.add_trace(go.Scatter(
-        x=statistics['start_year'],
-        y=statistics['max_etapas'],
-        mode='lines+markers',
-        name='Max',
-        line=dict(color='blue', dash='dash'),
-        marker=dict(size=8),
-    ))
-    
-    # Add Avg Etapas line
-    fig.add_trace(go.Scatter(
-        x=statistics['start_year'],
-        y=statistics['avg_etapas'],
-        mode='lines+markers',
-        name='P50',
-        line=dict(color='orange'),
-        marker=dict(size=8),
-    ))
-    
-    # Add annotations for Max Etapas
-    for i, row in statistics.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['max_etapas'],
-            text=f"{row['max_etapas']:.0f}",  # Zero decimals
-            showarrow=False,
-            yshift=15,  # Position above the point
-            font=dict(color="blue", size=10)
-        )
-    
-    # Add annotations for Avg Etapas
-    for i, row in statistics.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['avg_etapas'],
-            text=f"{row['avg_etapas']:.0f}",  # Zero decimals
-            showarrow=False,
-            yshift=15,  # Position above the point
-            font=dict(color="orange", size=10)
-        )
-    
-    # Update layout with labels and title
-    fig.update_layout(
-        title='Evolución de Cantidad de Etapas (Fm. Vaca Muerta)',
-        xaxis_title='Campaña',
-        yaxis_title='Cantidad de Etapas',
-        template='plotly_white',
-        legend=dict(
-            orientation='h',  # Horizontal orientation
-            yanchor='bottom',  # Aligns the legend to the bottom of the plot
-            y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-            xanchor='center',  # Aligns the legend to the center of the plot
-            x=0.5 # Centers the legend horizontally
-        )
+    selected_completion = st.multiselect(
+        "Seleccionar gráficos de completación:",
+        options=list(COMPLETION_CHARTS.keys()),
+        default=["Longitud de Rama (m)", "Cantidad de Etapas", "Arena Bombeada (tn)"],
     )
 
-    
-    # Show the plot
-    #fig.show()
-    st.plotly_chart(fig, use_container_width=True)
+    # Fracspacing: split by fluid type — handle separately
+    FRACSPACING_KEY = "Fracspacing (m)"
 
-    #----------------
-    
+    for chart_name in selected_completion:
+        col, y_label = COMPLETION_CHARTS[chart_name]
 
-    df_arena = df_merged_VMUT_filtered[
-        (df_merged_VMUT_filtered['arena_total_tn'].notna()) &
-        (df_merged_VMUT_filtered['arena_total_tn'] > 0)
-    ].copy()
-    
-
-    statistics_arena = df_arena.groupby(['start_year']).agg(
-        max_arena=('arena_total_tn', 'max'),
-        avg_arena=('arena_total_tn', 'median')
-    ).reset_index()
-    
-
-    fig = go.Figure()
-
-    
-    # Max Arena
-    fig.add_trace(go.Scatter(
-        x=statistics_arena['start_year'],
-        y=statistics_arena['max_arena'],
-        mode='lines+markers',
-        name='Max',
-        line=dict(color='blue', dash='dash'),
-        marker=dict(size=8),
-    ))
-    
-    # P50 Arena
-    fig.add_trace(go.Scatter(
-        x=statistics_arena['start_year'],
-        y=statistics_arena['avg_arena'],
-        mode='lines+markers',
-        name='P50',
-        line=dict(color='green'),
-        marker=dict(size=8),
-    ))
-
-     # Add annotations 
-    for _, row in statistics_arena.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['max_arena'],
-            text=f"{row['max_arena']:.0f}",
-            showarrow=False,
-            yshift=12,
-            font=dict(color='blue', size=10)
-        )
-    
-    for _, row in statistics_arena.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['avg_arena'],
-            text=f"{row['avg_arena']:.0f}",
-            showarrow=False,
-            yshift=-15,  # abajo para no superponer
-            font=dict(color='green', size=10)
-        )
-
-     # Update layout with labels and title
-        fig.update_layout(
-            title='Evolución de Arena Bombeada (Fm. Vaca Muerta)',
-            xaxis_title='Campaña',
-            yaxis_title='Arena Bombeada (tn)',
-            template='plotly_white',
-            legend=dict(
-                orientation='h',  # Horizontal orientation
-                yanchor='bottom',  # Aligns the legend to the bottom of the plot
-                y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-                xanchor='center',  # Aligns the legend to the center of the plot
-                x=0.5 # Centers the legend horizontally
+        if chart_name == FRACSPACING_KEY:
+            # Split by fluid type for fracspacing
+            fig_fsp = go.Figure()
+            for fluid, color_p50, color_min in [
+                ("Gasífero",    "red",   "#F08080"),
+                ("Petrolífero", "green", "#90EE90"),
+            ]:
+                df_fluid = df_vmut_dedup[df_vmut_dedup["tipopozoNEW"] == fluid]
+                fsp_stats = (
+                    df_fluid.groupby("start_year")[col]
+                    .agg(p50="median", min="min")
+                    .reset_index()
+                    .dropna()
+                )
+                fsp_stats["start_year"] = fsp_stats["start_year"].astype(int).astype(str)
+                fig_fsp.add_trace(go.Scatter(
+                    x=fsp_stats["start_year"], y=fsp_stats["p50"],
+                    mode="lines+markers", name=f"{fluid} P50",
+                    line=dict(color=color_p50),
+                ))
+                fig_fsp.add_trace(go.Scatter(
+                    x=fsp_stats["start_year"], y=fsp_stats["min"],
+                    mode="lines+markers", name=f"{fluid} Min",
+                    line=dict(color=color_p50, dash="dash"),
+                ))
+                for _, row in fsp_stats.iterrows():
+                    fig_fsp.add_annotation(
+                        x=row["start_year"], y=row["p50"],
+                        text=f"{row['p50']:.0f}", showarrow=False,
+                        yshift=12, font=dict(color=color_p50, size=10),
+                    )
+            fig_fsp.update_layout(
+                title=f"Evolución del Fracspacing — {selected_company} (Fm. Vaca Muerta)",
+                xaxis_title="Campaña", yaxis_title="Fracspacing (m)",
+                template="plotly_white", legend=LEGEND_TOP,
             )
-        )
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-    # -----------------------------
-
-    df_merged_VMUT_filtered['fracspacing'] = df_merged_VMUT_filtered['longitud_rama_horizontal_m'] / df_merged_VMUT_filtered['cantidad_fracturas']
-
-    
-    # Split by 'tipopozoNEW' and calculate statistics
-    split_stats = df_merged_VMUT_filtered.groupby(['start_year', 'tipopozoNEW']).agg(
-        avg_fracspacing=('fracspacing', 'median'),
-        min_fracspacing=('fracspacing', 'min'),
-        std_fracspacing=('fracspacing', 'std')
-    ).reset_index()
-
-    
-    # Create Line Plot for Gasífero and Petrolífero Statistics
-    fig_lines = go.Figure()
-    
-    # Add lines for Gasífero
-    gasifero_stats = split_stats[split_stats['tipopozoNEW'] == 'Gasífero']
-    fig_lines.add_trace(go.Scatter(
-        x=gasifero_stats['start_year'],
-        y=gasifero_stats['avg_fracspacing'],
-        mode='lines+markers',
-        name='Gasífero P50',
-        line=dict(color='red'),
-        marker=dict(size=8)
-    ))
-
-
-    
-    fig_lines.add_trace(go.Scatter(
-        x=gasifero_stats['start_year'],
-        y=gasifero_stats['min_fracspacing'],
-        mode='lines+markers',
-        name='Gasífero Min',
-        line=dict(color='red', dash='dash'),
-        marker=dict(size=8)
-    ))
-    
-    # Add lines for Petrolífero
-    petrolifero_stats = split_stats[split_stats['tipopozoNEW'] == 'Petrolífero']
-    fig_lines.add_trace(go.Scatter(
-        x=petrolifero_stats['start_year'],
-        y=petrolifero_stats['avg_fracspacing'],
-        mode='lines',
-        name='Petrolífero P50',
-        line=dict(color='green'),
-        marker=dict(size=8)
-    ))
-    fig_lines.add_trace(go.Scatter(
-        x=petrolifero_stats['start_year'],
-        y=petrolifero_stats['min_fracspacing'],
-        mode='lines',
-        name='Petrolífero Min',
-        line=dict(color='green', dash='dash'),
-        marker=dict(size=8)
-    ))
-    
-
-    # Add annotations 
-    for _, row in gasifero_stats.iterrows():
-        fig_lines.add_annotation(
-            x=row['start_year'],
-            y=row['avg_fracspacing'],
-            text=f"{row['avg_fracspacing']:.0f}",
-            showarrow=False,
-            yshift=12,
-            font=dict(color='red', size=10)
-        )
-    
-    for _, row in petrolifero_stats.iterrows():
-        fig_lines.add_annotation(
-            x=row['start_year'],
-            y=row['avg_fracspacing'],
-            text=f"{row['avg_fracspacing']:.0f}",
-            showarrow=False,
-            yshift=-15,  # abajo para no superponer
-            font=dict(color='green', size=10)
-        )
-
-     # Update layout with labels and title
-        fig_lines.update_layout(
-            title='Evolución del Fracspacing (Fm. Vaca Muerta)',
-            xaxis_title='Campaña',
-            yaxis_title='Fracspacing (metros)',
-            template='plotly_white',
-            legend=dict(
-                orientation='h',  # Horizontal orientation
-                yanchor='bottom',  # Aligns the legend to the bottom of the plot
-                y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-                xanchor='center',  # Aligns the legend to the center of the plot
-                x=0.5 # Centers the legend horizontally
+            st.plotly_chart(fig_fsp, use_container_width=True)
+        else:
+            source = df_vmut_dedup if col in ["longitud_rama_horizontal_m", "cantidad_fracturas"] else df_vmut
+            st.plotly_chart(
+                build_evolution_chart(
+                    source, col, y_label,
+                    f"Evolución de {chart_name} — {selected_company} (Fm. Vaca Muerta)",
+                ),
+                use_container_width=True,
             )
-        )
-    
-    
-    
-    # Mostrar en Streamlit
-    st.plotly_chart(fig_lines, use_container_width=True)
-
-#-----------
-
-    
-    # -------------------- Data --------------------
-    pivot_table_agua = df_merged_VMUT.groupby('start_year').agg({
-        'agua_inyectada_m3': 'median'
-    }).reset_index()
-    
-    # Opcional pero recomendado (evita NaN o ceros raros)
-    pivot_table_agua = pivot_table_agua[
-        pivot_table_agua['agua_inyectada_m3'].notna()
-    ]
-    
-    # -------------------- Plot --------------------
-    fig_agua_plot = go.Figure()
-    
-    fig_agua_plot.add_trace(go.Scatter(
-        x=pivot_table_agua['start_year'],
-        y=pivot_table_agua['agua_inyectada_m3']/1000,
-        mode='lines+markers',
-        name='Agua Inyectada (m3)',
-        line=dict(color='#1f77b4', width=3),
-        marker=dict(size=8)
-    ))
-    
-    # Annotations (tu estilo)
-    for _, row in pivot_table_agua.iterrows():
-        fig_agua_plot.add_annotation(
-            x=row['start_year'],
-            y=row['agua_inyectada_m3']/1000,
-            text=f"{int(row['agua_inyectada_m3'])}",
-            showarrow=False,
-            yshift=12,
-            font=dict(color="#1f77b4", size=10)
-        )
-    
-    # Layout
-    fig_agua_plot.update_layout(
-        title="Evolúción del P50 de Agua Inyectada por Año (Fm. Vaca Muerta)",
-        xaxis_title="Campaña",
-        yaxis_title="Agua Inyectada (km3)",
-        template="plotly_white",
-        hovermode="x unified",
-        legend_title="Indicador"
-    )
-    
-    # Streamlit render
-    st.plotly_chart(fig_agua_plot, use_container_width=True)
-
-    # -------------------- Prop x Etapa --------------------
-
-    st.divider()
-
-    df_merged_VMUT['prop_x_etapa'] = (
-    df_merged_VMUT['arena_total_tn'] / df_merged_VMUT['cantidad_fracturas']
-    ).replace([np.inf, -np.inf], np.nan)
-    
-    # Petrolífero
-    petrolifero_stats = df_merged_VMUT[
-        (df_merged_VMUT['tipopozoNEW'] == 'Petrolífero') &
-        (df_merged_VMUT['start_year'] > 2012)
-    ].groupby('start_year').agg(
-        median_prop=('prop_x_etapa', 'median'),
-        max_prop=('prop_x_etapa', 'max'),
-        min_prop=('prop_x_etapa', 'min') 
-    ).reset_index()
-    
-    # Gasífero
-    gasifero_stats = df_merged_VMUT[
-        (df_merged_VMUT['tipopozoNEW'] == 'Gasífero') &
-        (df_merged_VMUT['start_year'] > 2012)
-    ].groupby('start_year').agg(
-        median_prop=('prop_x_etapa', 'median'),
-        max_prop=('prop_x_etapa', 'max'),
-        min_prop=('prop_x_etapa', 'min') 
-    ).reset_index()
-    
-    # Figura
-    fig = go.Figure()
-    
-    # --- Petrolífero ---
-    fig.add_trace(go.Scatter(
-        x=petrolifero_stats['start_year'],
-        y=petrolifero_stats['median_prop'],
-        mode='lines+markers',
-        name='Petrolífero P50',
-        line=dict(color='green'),
-        marker=dict(size=8)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=petrolifero_stats['start_year'],
-        y=petrolifero_stats['max_prop'],
-        mode='lines+markers',
-        name='Petrolífero Max',
-        line=dict(color='green', dash='dash'),
-        marker=dict(size=8)
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=petrolifero_stats['start_year'],
-        y=petrolifero_stats['min_prop'],
-        mode='lines+markers',
-        name='Petrolífero Min',
-        line=dict(color='#90EE90', dash='dash'),
-        marker=dict(size=8)
-    ))
 
 
-    
-    
-    # --- Gasífero ---
-    fig.add_trace(go.Scatter(
-        x=gasifero_stats['start_year'],
-        y=gasifero_stats['median_prop'],
-        mode='lines+markers',
-        name='Gasífero P50',
-        line=dict(color='red'),
-        marker=dict(size=8)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=gasifero_stats['start_year'],
-        y=gasifero_stats['max_prop'],
-        mode='lines+markers',
-        name='Gasífero Max',
-        line=dict(color='red', dash='dash'),
-        marker=dict(size=8)
-    ))
+# ── Tab 3: Productivity ───────────────────────────────────────────────────────
 
-    fig.add_trace(go.Scatter(
-        x=gasifero_stats['start_year'],
-        y=gasifero_stats['min_prop'],
-        mode='lines+markers',
-        name='Gasífero Min',
-        line=dict(color='#F08080', dash='dash'),
-        marker=dict(size=8)
-    ))
-    
-    # --- Annotations estilo consistente ---
-    for _, row in petrolifero_stats.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['median_prop'],
-            text=f"{row['median_prop']:.0f}",
-            showarrow=False,
-            yshift=10,
-            font=dict(color='green', size=10)
-        )
-    
-    for _, row in gasifero_stats.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['median_prop'],
-            text=f"{row['median_prop']:.0f}",
-            showarrow=False,
-            yshift=-15,
-            font=dict(color='red', size=10)
-        )
-    
-    # Layout 
-    fig.update_layout(
-        title='Evolución de Propante por Etapa (Fm. Vaca Muerta)',
-        xaxis_title='Campaña',
-        yaxis_title='Propante por Etapa (tn/etapa)',
-        template='plotly_white',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.0,
-            xanchor='center',
-            x=0.5
-        )
-    )
-    
-    # Render
-    st.plotly_chart(fig, use_container_width=True)
-
-    # -----------------------------------------------------
-
-    st.divider()
-
-    df_merged_VMUT['AS_x_volumen_inyectado'] = (
-    df_merged_VMUT['arena_total_tn'] / (df_merged_VMUT['agua_inyectada_m3'] / 1000)
-    ).replace([np.inf, -np.inf], np.nan)
-    
-    as_stats = df_merged_VMUT[
-        (df_merged_VMUT['start_year'] > 2012)
-    ].groupby('start_year').agg(
-        median_as=('AS_x_volumen_inyectado', 'median'),
-        max_as=('AS_x_volumen_inyectado', 'max'),
-        min_as=('AS_x_volumen_inyectado', 'min') 
-    ).reset_index()
-    
-
-    # --- Gráfico Plotly
-    fig_as = go.Figure()
-    
-    # Median
-    fig_as.add_trace(go.Scatter(
-        x=as_stats['start_year'],
-        y=as_stats['median_as'],
-        mode='lines+markers',
-        name='P50',
-        line=dict(color='#FF4D8D', width=2)
-    ))
-    
-    # Min
-    fig_as.add_trace(go.Scatter(
-        x=as_stats['start_year'],
-        y=as_stats['min_as'],
-        mode='lines+markers',
-        name='Min',
-        line=dict(color='blue', dash='dot', width=2)
-    ))
-    
-    # Max
-    fig_as.add_trace(go.Scatter(
-        x=as_stats['start_year'],
-        y=as_stats['max_as'],
-        mode='lines+markers',
-        name='Max',
-        line=dict(color='orange', dash='dot', width=2)
-    ))
-
-
-    for _, row in as_stats.iterrows():
-        fig_as.add_annotation(
-            x=row['start_year'],
-            y=row['median_as'],
-            text=f"{row['median_as']:.0f}",
-            showarrow=False,
-            yshift=-15,
-            font=dict(color='#FF4D8D', size=10)
-        )
-
-
-    # Layout 
-    fig_as.update_layout(
-        title="Evolución de la Concentración de Agente de Sosten Por Volumen Inyectado (Fm. Vaca Muerta)",
-        xaxis_title='Campaña',
-        yaxis_title="Arena por Volumen Inyectado [tn/1000m³]",
-        template='plotly_white',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.0,
-            xanchor='center',
-            x=0.5
-        )
-    )
-   
-    
-    # Mostrar en Streamlit
-    st.plotly_chart(fig_as, use_container_width=True)
-
-    # ------------------------------------------------
-    # Proppant Intensity
-
-    st.divider()
-
-    df_merged_VMUT['proppant_intensity'] = (
-    df_merged_VMUT['arena_total_tn'] / df_merged_VMUT['longitud_rama_horizontal_m'] 
-    ).replace([np.inf, -np.inf], np.nan)
-    
-    proppant_intensity_stats = df_merged_VMUT[
-        (df_merged_VMUT['start_year'] > 2012)
-    ].groupby('start_year').agg(
-        median_prop_int=('proppant_intensity', 'median'),
-        max_prop_int=('proppant_intensity', 'max'),
-        min_prop_int=('proppant_intensity', 'min') 
-    ).reset_index()
-    
-
-    # --- Gráfico Plotly
-    fig_pi = go.Figure()
-    
-    # Median
-    fig_pi.add_trace(go.Scatter(
-        x=proppant_intensity_stats['start_year'],
-        y=proppant_intensity_stats['median_prop_int'],
-        mode='lines+markers',
-        name='P50',
-        line=dict(color='#FF4D8D', width=2)
-    ))
-    
-    # Min
-    fig_pi.add_trace(go.Scatter(
-        x=proppant_intensity_stats['start_year'],
-        y=proppant_intensity_stats['min_prop_int'],
-        mode='lines+markers',
-        name='Min',
-        line=dict(color='blue', dash='dot', width=2)
-    ))
-    
-    # Max
-    fig_pi.add_trace(go.Scatter(
-        x=proppant_intensity_stats['start_year'],
-        y=proppant_intensity_stats['max_prop_int'],
-        mode='lines+markers',
-        name='Max',
-        line=dict(color='orange', dash='dot', width=2)
-    ))
-
-
-    for _, row in proppant_intensity_stats.iterrows():
-        fig_pi.add_annotation(
-            x=row['start_year'],
-            y=row['median_prop_int'],
-            text=f"{row['median_prop_int']:.1f}",
-            showarrow=False,
-            yshift=-15,
-            font=dict(color='#FF4D8D', size=10)
-        )
-
-
-    # Layout 
-    fig_pi.update_layout(
-        title="Evolución de la Intensidad de Propante (Fm. Vaca Muerta)",
-        xaxis_title='Campaña',
-        yaxis_title="Intensidad de Propante [tn/m]",
-        template='plotly_white',
-        legend=dict(
-            orientation='h',
-            yanchor='bottom',
-            y=1.0,
-            xanchor='center',
-            x=0.5
-        )
-    )
-   
-    
-    # Mostrar en Streamlit
-    st.plotly_chart(fig_pi, use_container_width=True)
-
-# --- Tab 3: Productividad ---
 with tab3:
 
-    
-    #------------------------------------
+    PRODUCTIVITY_CHARTS = {
+        "Qo Pico — Petrolífero (m3/d)":          ("Petrolífero", "Qo_peak",        "Caudal de Petróleo (m3/d)"),
+        "Qg Pico — Gasífero (km3/d)":            ("Gasífero",    "Qg_peak",        "Caudal de Gas (km3/d)"),
+        "Qo Pico x Etapa — Petrolífero":         ("Petrolífero", "Qo_peak_x_etapa","Qo x Etapa (m3/d/etapa)"),
+        "Qg Pico x Etapa — Gasífero":            ("Gasífero",    "Qg_peak_x_etapa","Qg x Etapa (km3/d/etapa)"),
+    }
 
-    import numpy as np
-    
-    
-    # Step 1: Process Data for Petrolífero to get max and average oil rate
-    grouped_petrolifero = df_merged_VMUT[df_merged_VMUT['tipopozoNEW'] == 'Petrolífero'].groupby(
-        ['start_year']
-    ).agg({
-        'Qo_peak': [
-                'max',
-                lambda x: np.percentile(x, 50),
-                lambda x: np.percentile(x, 90),
-                lambda x: np.percentile(x, 10)
-            ]
-    }).reset_index()
-    
-    # Flatten column names
-    grouped_petrolifero.columns = ['start_year', 'max_oil_rate', 'avg_oil_rate', 'p10_oil_rate', 'p90_oil_rate']
-    
-    # Step 2: Plot the data
-    fig = go.Figure()
-    
-    # Plot maximum oil rate (dotted line)
-    fig.add_trace(go.Scatter(
-        x=grouped_petrolifero['start_year'],
-        y=grouped_petrolifero['max_oil_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Petróleo (Max)',
-        line=dict(dash='dot', color='green'),
-        marker=dict(symbol='circle', size=8, color='green')
-    ))
-    
-    # Plot average oil rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_petrolifero['start_year'],
-        y=grouped_petrolifero['avg_oil_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Petróleo (P50)',
-        line=dict(color='green'),
-        marker=dict(symbol='circle', size=8, color='green')
-    ))
-
-    # Plot P90 oil rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_petrolifero['start_year'],
-        y=grouped_petrolifero['p10_oil_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Petróleo (P10)',
-        line=dict(color='black'),
-        marker=dict(symbol='circle', size=8, color='green')
-    ))
-
-    # Plot P10 oil rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_petrolifero['start_year'],
-        y=grouped_petrolifero['p90_oil_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Petróleo (P90)',
-        line=dict(color='black'),
-        marker=dict(symbol='circle', size=8, color='green')
-    ))
-    
-    # Add annotations for max oil rate
-    for i, row in grouped_petrolifero.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['max_oil_rate'],
-            text=str(int(row['max_oil_rate'])),  # Convert to integer (no decimals)
-            showarrow=False,
-            arrowhead=2,
-            ax=0,
-            ay=-40,
-            font=dict(size=10, color='green'),
-            bgcolor='white'
-        )
-    
-    # Add annotations for average oil rate
-    for i, row in grouped_petrolifero.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['avg_oil_rate'],
-            text=str(int(row['avg_oil_rate'])),  # Convert to integer (no decimals)
-            showarrow=False,
-            arrowhead=2,
-            ax=0,
-            ay=40,
-            font=dict(size=10, color='green'),
-            bgcolor='white'
-        )
-    
-    # Step 3: Customize Layout
-    fig.update_layout(
-        title="Tipo Petrolífero: Evolución de Caudal Pico (Maximo y Percentiles)",
-        xaxis_title="Campaña",
-        yaxis_title="Caudal de Petróleo (m3/d)",
-        template="plotly_white",
-        legend=dict(
-            orientation='h',  # Horizontal orientation
-            yanchor='bottom',  # Aligns the legend to the bottom of the plot
-            y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-            xanchor='center',  # Aligns the legend to the center of the plot
-            x=0.5 # Centers the legend horizontally
-        )
+    selected_prod = st.multiselect(
+        "Seleccionar gráficos de productividad:",
+        options=list(PRODUCTIVITY_CHARTS.keys()),
+        default=list(PRODUCTIVITY_CHARTS.keys())[:2],
     )
-    
-     #fig.show()
-    st.plotly_chart(fig,use_container_width=True)
-    
-    
-    # Step 1: Process Data for Gasífero to get max and average gas rate
-    grouped_gasifero = df_merged_VMUT[df_merged_VMUT['tipopozoNEW'] == 'Gasífero'].groupby(
-        ['start_year']
-    ).agg({
-        'Qg_peak': [
-                'max',
-                lambda x: np.percentile(x, 50),
-                lambda x: np.percentile(x, 90),
-                lambda x: np.percentile(x, 10)
-            ]
-    }).reset_index()
-    
-    # Flatten column names
-    grouped_gasifero.columns = ['start_year', 'max_gas_rate', 'avg_gas_rate', 'p10_gas_rate', 'p90_gas_rate']
-    
-    # Step 2: Plot the data
-    fig = go.Figure()
-    
-    # Plot maximum gas rate (dotted line)
-    fig.add_trace(go.Scatter(
-        x=grouped_gasifero['start_year'],
-        y=grouped_gasifero['max_gas_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Gas (Máximo Anual)',
-        line=dict(dash='dot', color='red'),
-        marker=dict(symbol='circle', size=8, color='red')
-    ))
-    
-    # Plot average gas rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_gasifero['start_year'],
-        y=grouped_gasifero['avg_gas_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Gas (P50 Anual)',
-        line=dict(color='red'),
-        marker=dict(symbol='circle', size=8, color='red')
-    ))
 
-    # Plot average gas rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_gasifero['start_year'],
-        y=grouped_gasifero['p90_gas_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Gas (P10)',
-        line=dict(color='black'),
-        marker=dict(symbol='circle', size=8, color='red')
-    ))
+    for chart_name in selected_prod:
+        fluid, metric_col, y_label = PRODUCTIVITY_CHARTS[chart_name]
+        df_fluid = df_vmut[df_vmut["tipopozoNEW"] == fluid].dropna(subset=[metric_col])
 
-    # Plot average gas rate (solid line)
-    fig.add_trace(go.Scatter(
-        x=grouped_gasifero['start_year'],
-        y=grouped_gasifero['p10_gas_rate'],
-        mode='lines+markers',
-        name='Caudal Pico de Gas (P90)',
-        line=dict(color='black'),
-        marker=dict(symbol='circle', size=8, color='red')
-    ))
- 
-    # Add annotations for max gas rate
-    for i, row in grouped_gasifero.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['max_gas_rate'],
-            text=str(int(row['max_gas_rate'])),  # Convert to integer (no decimals)
-            showarrow=False,
-            arrowhead=2,
-            ax=0,
-            ay=-40,
-            font=dict(size=10, color='red'),
-            bgcolor='white'
+        stats = (
+            df_fluid.groupby("start_year")[metric_col]
+            .agg(
+                max   ="max",
+                p50   =lambda x: np.percentile(x.dropna(), 50),
+                p10   =lambda x: np.percentile(x.dropna(), 10),
+                p90   =lambda x: np.percentile(x.dropna(), 90),
+            )
+            .reset_index()
         )
-    
-    # Add annotations for average gas rate
-    for i, row in grouped_gasifero.iterrows():
-        fig.add_annotation(
-            x=row['start_year'],
-            y=row['avg_gas_rate'],
-            text=str(int(row['avg_gas_rate'])),  # Convert to integer (no decimals)
-            showarrow=False,
-            arrowhead=2,
-            ax=0,
-            ay=40,
-            font=dict(size=10, color='red'),
-            bgcolor='white'
+        stats["start_year"] = stats["start_year"].astype(int).astype(str)
+
+        color = "green" if fluid == "Petrolífero" else "red"
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=stats["start_year"], y=stats["max"],
+            mode="lines+markers", name="Max",
+            line=dict(dash="dot", color=color), marker=dict(size=8),
+        ))
+        fig.add_trace(go.Scatter(
+            x=stats["start_year"], y=stats["p50"],
+            mode="lines+markers", name="P50",
+            line=dict(color=color), marker=dict(size=8),
+        ))
+        fig.add_trace(go.Scatter(
+            x=stats["start_year"], y=stats["p90"],
+            mode="lines+markers", name="P90",
+            line=dict(color="black", width=1), marker=dict(size=8),
+        ))
+        fig.add_trace(go.Scatter(
+            x=stats["start_year"], y=stats["p10"],
+            mode="lines+markers", name="P10",
+            line=dict(color="black", width=1), marker=dict(size=8),
+        ))
+        for _, row in stats.iterrows():
+            fig.add_annotation(x=row["start_year"], y=row["max"],
+                               text=f"{row['max']:.0f}", showarrow=False,
+                               yshift=12, font=dict(color=color, size=10))
+            fig.add_annotation(x=row["start_year"], y=row["p50"],
+                               text=f"{row['p50']:.0f}", showarrow=False,
+                               yshift=-15, font=dict(color=color, size=10))
+        fig.update_layout(
+            title=f"{chart_name} — {selected_company} (Fm. Vaca Muerta)",
+            xaxis_title="Campaña", yaxis_title=y_label,
+            template="plotly_white", legend=LEGEND_TOP,
         )
-    
-    # Step 3: Customize Layout
-    fig.update_layout(
-        title="Tipo Gasífero: Evolución de Caudal Pico (Maximo y Percentiles)",
-        xaxis_title="Campaña",
-        yaxis_title="Caudal de Gas (km3/d)",
-        template="plotly_white",
-        legend=dict(
-            orientation='h',  # Horizontal orientation
-            yanchor='bottom',  # Aligns the legend to the bottom of the plot
-            y=1.0,  # Adjusts the position of the legend (negative value places it below the plot)
-            xanchor='center',  # Aligns the legend to the center of the plot
-            x=0.5 # Centers the legend horizontally
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ── Tab 4: Well profiles ──────────────────────────────────────────────────────
+
+with tab4:
+
+    st.subheader("Perfiles de Pozo — Gráficos Diagnóstico")
+
+    available_siglas = sorted(
+        df_vmut["sigla"].dropna().unique()
+    )
+
+    if not available_siglas:
+        st.info("No hay pozos disponibles para la empresa seleccionada.")
+    else:
+        selected_wells = st.multiselect(
+            "Seleccionar pozos:",
+            options=available_siglas,
+            default=[],
         )
-    )
-    
-     #fig.show()
-    st.plotly_chart(fig,use_container_width=True)
 
-# --------------------
+        if not selected_wells:
+            st.caption("Seleccioná al menos un pozo para ver los perfiles.")
+        else:
+            # Filter production data for selected wells
+            well_prod = data_filtered[data_filtered["sigla"].isin(selected_wells)].copy()
 
+            # Determine fluid type per well for plot selection
+            fluid_map = (
+                data_filtered[["sigla", "tipopozoNEW"]]
+                .drop_duplicates(subset="sigla")
+                .set_index("sigla")["tipopozoNEW"]
+                .to_dict()
+            )
 
-    # --- CÁLCULO DE COLUMNAS POR ETAPA ---
-    df_merged_VMUT['Qo_peak_x_etapa'] = (
-        df_merged_VMUT['Qo_peak'] / df_merged_VMUT['cantidad_fracturas']
-    ).replace([np.inf, -np.inf], np.nan)
-    
-    df_merged_VMUT['Qg_peak_x_etapa'] = (
-        df_merged_VMUT['Qg_peak'] / df_merged_VMUT['cantidad_fracturas']
-    ).replace([np.inf, -np.inf], np.nan)
-    
-    # =================================================================
-    # GRÁFICO 3: Petrolífero por Etapa
-    # =================================================================
-    grouped_petrolifero_etapa = df_merged_VMUT[
-    (df_merged_VMUT['tipopozoNEW'] == 'Petrolífero') & 
-    (df_merged_VMUT['start_year'] > 2012)
-    ].groupby(['start_year']).agg({
-        'Qo_peak_x_etapa': [
-            'max',
-            lambda x: np.nanpercentile(x, 50) if not x.dropna().empty else np.nan,
-            lambda x: np.nanpercentile(x, 90) if not x.dropna().empty else np.nan,
-            lambda x: np.nanpercentile(x, 10) if not x.dropna().empty else np.nan
-        ]
-    }).reset_index()
-    
-    # Nombres de columnas consistentes
-    grouped_petrolifero_etapa.columns = ['start_year', 'max_oil', 'p50_oil', 'p90_oil', 'p10_oil']
-    
-    fig_oil_etapa = go.Figure()
-    
-    # Max
-    fig_oil_etapa.add_trace(go.Scatter(
-        x=grouped_petrolifero_etapa['start_year'], y=grouped_petrolifero_etapa['max_oil'],
-        mode='lines+markers', name='Max', line=dict(dash='dot', color='green')
-    ))
-    # P50
-    fig_oil_etapa.add_trace(go.Scatter(
-        x=grouped_petrolifero_etapa['start_year'], y=grouped_petrolifero_etapa['p50_oil'],
-        mode='lines+markers', name='P50', line=dict(color='green')
-    ))
-    # P90 (Línea superior de confianza)
-    fig_oil_etapa.add_trace(go.Scatter(
-        x=grouped_petrolifero_etapa['start_year'], y=grouped_petrolifero_etapa['p90_oil'],
-        mode='lines+markers', name='P90', line=dict(color='black', width=1)
-    ))
-    # P10 (Línea inferior de confianza)
-    fig_oil_etapa.add_trace(go.Scatter(
-        x=grouped_petrolifero_etapa['start_year'], y=grouped_petrolifero_etapa['p10_oil'],
-        mode='lines+markers', name='P10', line=dict(color='black', width=1)
-    ))
-    
-    # Anotaciones (Max y P50)
-    for _, row in grouped_petrolifero_etapa.iterrows():
-        if not np.isnan(row['max_oil']):
-            fig_oil_etapa.add_annotation(x=row['start_year'], y=row['max_oil'], text=f"{row['max_oil']:.2f}",
-                                         showarrow=False, ay=-40, font=dict(color='green'), bgcolor='white')
-        if not np.isnan(row['p50_oil']):
-            fig_oil_etapa.add_annotation(x=row['start_year'], y=row['p50_oil'], text=f"{row['p50_oil']:.2f}",
-                                         showarrow=False, ay=40, font=dict(color='green'), bgcolor='white')
-    
-    fig_oil_etapa.update_layout(
-        title="Tipo Petrolífero Evolución del Caudal Pico de Gas por Etapa (Máximo y Percentiles)",
-        xaxis_title="Campaña", yaxis_title="Caudal de Petróleo (m3/d/etapa)",
-        template="plotly_white", legend=dict(orientation='h', y=1.1, x=0.5, xanchor='center')
-    )
-    st.plotly_chart(fig_oil_etapa, use_container_width=True)
-    
-    
-    # =================================================================
-    # GRÁFICO 4: Gasífero por Etapa (CORREGIDO)
-    # =================================================================
-    grouped_gasifero_etapa = df_merged_VMUT[
-    (df_merged_VMUT['tipopozoNEW'] == 'Gasífero') & 
-    (df_merged_VMUT['start_year'] > 2012)
-    ].groupby(['start_year']).agg({
-        'Qo_peak_x_etapa': [
-            'max',
-            lambda x: np.nanpercentile(x, 50) if not x.dropna().empty else np.nan,
-            lambda x: np.nanpercentile(x, 90) if not x.dropna().empty else np.nan,
-            lambda x: np.nanpercentile(x, 10) if not x.dropna().empty else np.nan
-        ]
-    }).reset_index()
-    
-    grouped_gasifero_etapa.columns = ['start_year', 'max_gas', 'p50_gas', 'p90_gas', 'p10_gas']
-    
-    fig_gas_etapa = go.Figure()
-    
-    # Max
-    fig_gas_etapa.add_trace(go.Scatter(
-        x=grouped_gasifero_etapa['start_year'], y=grouped_gasifero_etapa['max_gas'],
-        mode='lines+markers', name='Max', line=dict(dash='dot', color='red')
-    ))
-    # P50
-    fig_gas_etapa.add_trace(go.Scatter(
-        x=grouped_gasifero_etapa['start_year'], y=grouped_gasifero_etapa['p50_gas'],
-        mode='lines+markers', name='P50', line=dict(color='red')
-    ))
-    # P90
-    fig_gas_etapa.add_trace(go.Scatter(
-        x=grouped_gasifero_etapa['start_year'], y=grouped_gasifero_etapa['p90_gas'],
-        mode='lines+markers', name='P90', line=dict(color='black', width=1)
-    ))
-    # P10
-    fig_gas_etapa.add_trace(go.Scatter(
-        x=grouped_gasifero_etapa['start_year'], y=grouped_gasifero_etapa['p10_gas'],
-        mode='lines+markers', name='P10', line=dict(color='black', width=1)
-    ))
-    
-    # Anotaciones (Max y P50)
-    for _, row in grouped_gasifero_etapa.iterrows():
-        if not np.isnan(row['max_gas']):
-            fig_gas_etapa.add_annotation(x=row['start_year'], y=row['max_gas'], text=f"{row['max_gas']:.2f}",
-                                         showarrow=False, ay=-40, font=dict(color='red'), bgcolor='white')
-        if not np.isnan(row['p50_gas']):
-            fig_gas_etapa.add_annotation(x=row['start_year'], y=row['p50_gas'], text=f"{row['p50_gas']:.2f}",
-                                         showarrow=False, ay=40, font=dict(color='red'), bgcolor='white')
-    
-    fig_gas_etapa.update_layout(
-        title="Tipo Gasífero: Evolución del Caudal Pico de Gas por Etapa (Máximo y Percentiles)",
-        xaxis_title="Campaña", yaxis_title="Caudal de gas (km3/d/etapa)",
-        template="plotly_white", legend=dict(orientation='h', y=1.1, x=0.5, xanchor='center')
-    )
-    st.plotly_chart(fig_gas_etapa, use_container_width=True)
+            # Recompute clean monotonic cumulative per well
+            well_prod = well_prod.sort_values(["sigla", "date"])
+            well_prod["Gp_clean"] = well_prod.groupby("sigla")["prod_gas"].cumsum()
+            well_prod["Np_clean"] = well_prod.groupby("sigla")["prod_pet"].cumsum()
+            well_prod["Wp_clean"] = well_prod.groupby("sigla")["prod_agua"].cumsum()
+            well_prod["GOR"] = (well_prod["Gp_clean"] / well_prod["Np_clean"] * 1000).replace([np.inf, -np.inf], np.nan)
+            well_prod["WOR"] = (well_prod["Wp_clean"] / well_prod["Np_clean"]).replace([np.inf, -np.inf], np.nan)
+            well_prod["WGR"] = (well_prod["Wp_clean"] / well_prod["Gp_clean"] * 1000).replace([np.inf, -np.inf], np.nan)
+
+            # Determine available plots based on fluid types of selected wells
+            fluids_selected = set(fluid_map.get(w) for w in selected_wells)
+            GAS_PLOTS = {
+                "Qg vs Gp":  ("Gp_clean", "gas_rate", "Gp (km3)",  "Qg (km3/d)"),
+                "GOR vs Gp": ("Gp_clean", "GOR",      "Gp (km3)",  "GOR (m3/km3)"),
+            }
+            OIL_PLOTS = {
+                "Qo vs Np":  ("Np_clean", "oil_rate", "Np (m3)",   "Qo (m3/d)"),
+                "WOR vs Np": ("Np_clean", "WOR",      "Np (m3)",   "WOR (m3/m3)"),
+            }
+            available_diag: dict = {}
+            if "Gasífero" in fluids_selected:
+                available_diag.update(GAS_PLOTS)
+            if "Petrolífero" in fluids_selected:
+                available_diag.update(OIL_PLOTS)
+            if not available_diag:
+                available_diag = {**GAS_PLOTS, **OIL_PLOTS}
+
+            col_sel, col_log = st.columns([3, 1])
+            with col_sel:
+                selected_diag = st.multiselect(
+                    "Seleccionar gráficos diagnóstico:",
+                    options=list(available_diag.keys()),
+                    default=[],
+                )
+            with col_log:
+                use_semilog = st.checkbox("Escala semilog (eje Y)", value=False)
+
+            palette = px.colors.qualitative.Set2
+
+            if selected_diag:
+                for plot_name in selected_diag:
+                    x_col, y_col, x_label, y_label = available_diag[plot_name]
+                    fig = go.Figure()
+                    all_y = []
+                    for i, well in enumerate(selected_wells):
+                        wd = well_prod[well_prod["sigla"] == well].dropna(subset=[x_col, y_col])
+                        if wd.empty:
+                            continue
+                        fig.add_trace(go.Scatter(
+                            x=wd[x_col], y=wd[y_col],
+                            mode="lines+markers", name=well,
+                            line=dict(color=palette[i % len(palette)]),
+                            hovertemplate=f"{x_label}: %{{x:.2f}}<br>{y_label}: %{{y:.2f}}",
+                        ))
+                        all_y.extend(wd[y_col].tolist())
+
+                    # Robust y-axis
+                    clean_y = pd.Series(all_y).replace([np.inf, -np.inf], np.nan).dropna()
+                    y_range = (
+                        [max(0, np.percentile(clean_y, 1)), np.percentile(clean_y, 99) * 1.10]
+                        if not clean_y.empty and not use_semilog else None
+                    )
+                    fig.update_layout(
+                        title=f"{plot_name} — {selected_company}",
+                        xaxis_title=x_label,
+                        yaxis_title=y_label,
+                        yaxis=dict(type="log" if use_semilog else "linear", range=y_range),
+                        hovermode="x unified",
+                        legend_title="Pozo",
+                        template="plotly_white",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.caption("Seleccioná al menos un gráfico diagnóstico para visualizarlo.")
