@@ -152,8 +152,8 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     df = df.copy()
-    df["Qo_peak"]   = df.groupby("sigla")["oil_rate"].transform("max")
-    df["Qg_peak"]   = df.groupby("sigla")["gas_rate"].transform("max")
+    df["Qo_peak"]    = df.groupby("sigla")["oil_rate"].transform("max")
+    df["Qg_peak"]    = df.groupby("sigla")["gas_rate"].transform("max")
     df["start_year"] = df.groupby("sigla")["anio"].transform("min")
 
     def calculate_eur(group):
@@ -165,7 +165,13 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             group[col] = group.loc[group["date"] <= cutoff, cum_col].max()
         return group
 
-    df = df.groupby("sigla", group_keys=False).apply(calculate_eur).reset_index(drop=True)
+    # Fix para pandas 2.x: groupby+apply puede promover 'sigla' al índice
+    # en lugar de mantenerla como columna, rompiendo el groupby posterior.
+    df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
+    if df.index.name == "sigla" or "sigla" not in df.columns:
+        df = df.reset_index()
+    else:
+        df = df.reset_index(drop=True)
 
     # Build agg dict — only include optional columns if present in df
     agg = dict(
