@@ -859,3 +859,125 @@ with tab_tablas:
             prev = row["start_year"]
         st.write(f"**{fluid}: Top 3 Empresas por P50 {label} por Campaña**")
         st.dataframe(pd.DataFrame(rows2), use_container_width=True, hide_index=True)
+
+    with tab_comparativas:
+
+        st.subheader("Visualizaciones Comparativas", divider="blue")
+        st.caption(
+            "Boxplots para comparar distribución, dispersión y outliers por campaña. "
+            "Útiles para distinguir récords aislados de cambios estructurales."
+        )
+
+        comp_metric = st.selectbox(
+            "Seleccionar métrica comparativa:",
+            [
+                "Longitud de Rama",
+                "Cantidad de Etapas",
+                "Arena Total",
+                "Fracspacing",
+                "Prop x Etapa",
+                "Qo Pico",
+                "Qg Pico",
+                "Qo Pico x Etapa",
+                "Qg Pico x Etapa",
+            ]
+        )
+
+        compare_mode = st.radio(
+            "Comparar por:",
+            ["Campaña", "Empresa"],
+            horizontal=True,
+        )
+
+        fluid_mode = st.radio(
+            "Filtrar fluido:",
+            ["Todos", "Petrolífero", "Gasífero"],
+            horizontal=True,
+        )
+
+        if compare_mode == "Campaña":
+            by_col = "start_year"
+        else:
+            by_col = "empresaNEW"
+
+        fluid_filter = None if fluid_mode == "Todos" else fluid_mode
+
+        metric_map = {
+            "Longitud de Rama": (
+                df_vmut_dedup[df_vmut_dedup["longitud_rama_horizontal_m"] > 0],
+                "longitud_rama_horizontal_m",
+                "Longitud de Rama (m)",
+            ),
+            "Cantidad de Etapas": (
+                df_vmut_dedup[df_vmut_dedup["cantidad_fracturas"] > 0],
+                "cantidad_fracturas",
+                "Cantidad de Etapas",
+            ),
+            "Arena Total": (
+                df_vmut_dedup[df_vmut_dedup["arena_total_tn"] > 0],
+                "arena_total_tn",
+                "Arena Total (tn)",
+            ),
+            "Fracspacing": (
+                df_vmut_dedup[df_vmut_dedup["fracspacing"] > 0],
+                "fracspacing",
+                "Fracspacing (m)",
+            ),
+            "Prop x Etapa": (
+                df_vmut[df_vmut["prop_x_etapa"] > 0],
+                "prop_x_etapa",
+                "Prop x Etapa (tn/etapa)",
+            ),
+            "Qo Pico": (
+                df_vmut[df_vmut["Qo_peak"] > 0],
+                "Qo_peak",
+                "Qo Pico (m3/d)",
+            ),
+            "Qg Pico": (
+                df_vmut[df_vmut["Qg_peak"] > 0],
+                "Qg_peak",
+                "Qg Pico (km3/d)",
+            ),
+            "Qo Pico x Etapa": (
+                df_vmut[df_vmut["Qo_peak_x_etapa"] > 0],
+                "Qo_peak_x_etapa",
+                "Qo Pico x Etapa (m3/d/etapa)",
+            ),
+            "Qg Pico x Etapa": (
+                df_vmut[df_vmut["Qg_peak_x_etapa"] > 0],
+                "Qg_peak_x_etapa",
+                "Qg Pico x Etapa (km3/d/etapa)",
+            ),
+        }
+
+        plot_df, metric_col, y_label = metric_map[comp_metric]
+
+        if by_col == "empresaNEW":
+            # limitar cantidad de empresas si se grafica por empresa
+            top_emp = (
+                plot_df.groupby("empresaNEW")[metric_col]
+                .median()
+                .nlargest(top_n_companies)
+                .index
+            )
+            plot_df = plot_df[plot_df["empresaNEW"].isin(top_emp)]
+
+        fig = comparative_boxplot(
+            plot_df,
+            metric_col=metric_col,
+            title=f"{comp_metric} — distribución por {by_col}",
+            y_label=y_label,
+            fluid_filter=fluid_filter,
+            by=by_col,
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Lectura sugerida")
+        st.write(
+            "- La línea central de cada caja es la mediana.\n"
+            "- La caja muestra el rango intercuartílico (P25–P75).\n"
+            "- Los puntos fuera de la caja muestran outliers.\n"
+            "- Si una campaña desplaza toda la caja hacia arriba o abajo, hay un cambio estructural; "
+            "si solo aparecen outliers, puede ser un efecto de pocos pozos."
+        )
