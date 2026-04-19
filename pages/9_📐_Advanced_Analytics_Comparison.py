@@ -258,7 +258,7 @@ def render_leaders(
     row_ord = pivot.mean(axis=1).sort_values(ascending=False).index
     col_ord = pivot.mean(axis=0).sort_values(ascending=False).index
     pivot   = pivot.loc[row_ord, col_ord]
-    txt_v   = pivot.applymap(lambda v: f"{v:.0f}%" if pd.notna(v) else "—").values
+    txt_v   = pivot.map(lambda v: f"{v:.0f}%" if pd.notna(v) else "—").values
 
     fig_h = go.Figure(go.Heatmap(
         z=pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
