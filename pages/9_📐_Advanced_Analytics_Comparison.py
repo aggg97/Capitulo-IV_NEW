@@ -201,101 +201,6 @@ def build_quadrant_chart(
     return fig
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS — ALTO-ALTO LEADERS + CONSISTENCY HEATMAP
-# ══════════════════════════════════════════════════════════════════════════════
-
-def render_leaders(
-    df_universe: pd.DataFrame,
-    x_col: str, y_col: str,
-    x_label: str, y_label: str,
-    fluid_label: str, section_key: str,
-):
-    x_p50 = pct_q(df_universe[x_col], 0.50)
-    y_p50 = pct_q(df_universe[y_col], 0.50)
-    df_aa  = df_universe[(df_universe[x_col] >= x_p50) & (df_universe[y_col] >= y_p50)].copy()
-
-    if df_aa.empty:
-        st.caption("No hay pozos en el cuadrante Alto-Alto.")
-        return
-
-    pct_aa_univ = len(df_aa) / len(df_universe) * 100
-    st.markdown(
-        f"**{len(df_aa)} pozos** ({pct_aa_univ:.1f}% del universo {fluid_label}) "
-        f"están en el cuadrante ⭐ Alto–Alto."
-    )
-
-    # ── Top wells table ───────────────────────────────────────────────────────
-    show_cols  = [c for c in ["sigla", "empresaNEW", "areayacimiento", x_col, y_col] if c in df_aa.columns]
-    rename_map = {"sigla": "Pozo", "empresaNEW": "Empresa",
-                  "areayacimiento": "Área", x_col: x_label, y_col: y_label}
-    st.markdown("**Top 15 pozos del cuadrante Alto–Alto** (ordenados por eje Y)")
-    st.dataframe(
-        df_aa[show_cols].rename(columns=rename_map)
-        .sort_values(y_label, ascending=False).head(15).reset_index(drop=True),
-        use_container_width=True, hide_index=True,
-    )
-
-    # ── Consistency heatmap ───────────────────────────────────────────────────
-    if "empresaNEW" not in df_aa.columns or "areayacimiento" not in df_aa.columns:
-        return
-
-    aa_cnt  = (df_aa.groupby(["empresaNEW", "areayacimiento"])["sigla"].nunique()
-               .reset_index(name="aa_n"))
-    tot_cnt = (df_universe.groupby(["empresaNEW", "areayacimiento"])["sigla"].nunique()
-               .reset_index(name="tot_n"))
-    heat    = tot_cnt.merge(aa_cnt, on=["empresaNEW", "areayacimiento"], how="left")
-    heat["aa_n"]   = heat["aa_n"].fillna(0)
-    heat["pct"]    = (heat["aa_n"] / heat["tot_n"] * 100).round(1)
-    heat           = heat[heat["tot_n"] >= 2]
-
-    if heat.empty:
-        st.caption("No hay suficientes datos para el heatmap (mínimo 2 pozos por combinación).")
-        return
-
-    pivot = heat.pivot_table(index="empresaNEW", columns="areayacimiento",
-                              values="pct", fill_value=np.nan)
-    row_ord = pivot.mean(axis=1).sort_values(ascending=False).index
-    col_ord = pivot.mean(axis=0).sort_values(ascending=False).index
-    pivot   = pivot.loc[row_ord, col_ord]
-    txt_v   = pivot.map(lambda v: f"{v:.0f}%" if pd.notna(v) else "—").values
-
-    fig_h = go.Figure(go.Heatmap(
-        z=pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
-        colorscale="YlGn", zmin=0, zmax=100,
-        text=txt_v, texttemplate="%{text}", textfont=dict(size=9),
-        hoverongaps=False,
-        colorbar=dict(title="% Alto-Alto", ticksuffix="%"),
-        hovertemplate="Empresa: %{y}<br>Área: %{x}<br>% Alto-Alto: %{z:.1f}%<extra></extra>",
-    ))
-    fig_h.update_layout(
-        template="plotly_white",
-        title=f"Heatmap de consistencia — % pozos Alto-Alto · {fluid_label}",
-        xaxis=dict(title="Área de Yacimiento", tickangle=-35),
-        yaxis_title="Empresa",
-        height=max(300, 32 * len(pivot) + 130),
-        margin=dict(l=165, r=30, t=60, b=130),
-    )
-    st.markdown("**Heatmap de consistencia — % de pozos Alto-Alto por Empresa × Área:**")
-    st.caption("Verde intenso = alta consistencia. Solo combinaciones con ≥ 2 pozos en el universo.")
-    st.plotly_chart(fig_h, use_container_width=True, key=f"heat_{section_key}")
-
-    # ── Empresa ranking ───────────────────────────────────────────────────────
-    emp_rank = (
-        heat.groupby("empresaNEW")
-        .apply(lambda g: pd.Series({
-            "Pozos Alto-Alto": int(g["aa_n"].sum()),
-            "Pozos Universo":  int(g["tot_n"].sum()),
-            "% Alto-Alto":     round(g["aa_n"].sum() / g["tot_n"].sum() * 100, 1),
-        }))
-        .reset_index()
-        .rename(columns={"empresaNEW": "Empresa"})
-        .sort_values("% Alto-Alto", ascending=False)
-        .reset_index(drop=True)
-    )
-    st.markdown("**Ranking de empresas por % de pozos en Alto-Alto:**")
-    st.dataframe(emp_rank, use_container_width=True, hide_index=True)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS — CASCADED FILTER  (empresa → area → sigla)
@@ -445,9 +350,7 @@ if not df_hl_p.empty:
     ry = (summary_fluid[peak_col].dropna() < df_hl_p[peak_col].median()).mean() * 100
     st.caption(f"Percentil **{rx:.0f}** en {cum_label} · percentil **{ry:.0f}** en {peak_label} vs universo {fluid_prod}.")
 
-with st.expander("⭐ Líderes del cuadrante Alto-Alto", expanded=False):
-    render_leaders(summary_fluid, cum_col, peak_col, cum_label, peak_label,
-                   fluid_prod, "p1a")
+
 
 st.divider()
 
@@ -466,10 +369,6 @@ fig1b = build_quadrant_chart(
     log_x=log_x_p, log_y=log_y_p,
 )
 st.plotly_chart(fig1b, use_container_width=True)
-
-with st.expander("⭐ Líderes del cuadrante Alto-Alto (Q_pico vs Agua)", expanded=False):
-    render_leaders(sum_w, "water_cum", peak_col, water_label, peak_label,
-                   fluid_prod, "p1b")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
