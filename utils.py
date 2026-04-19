@@ -165,7 +165,7 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             group[col] = group.loc[group["date"] <= cutoff, cum_col].max()
         return group
 
-    df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
+    df = df.groupby("sigla", group_keys=False).apply(calculate_eur).reset_index(drop=True)
 
     # Build agg dict — only include optional columns if present in df
     agg = dict(
