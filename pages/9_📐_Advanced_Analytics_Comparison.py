@@ -501,44 +501,5 @@ if not df_hl_c.empty:
                 use_container_width=True, hide_index=True,
             )
 
-with st.expander("⭐ Líderes del cuadrante Alto-Alto (Completación)", expanded=False):
-    render_leaders(df_c, xv, yv, xvl, yvl, fluid_c, "comp1")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# METHODOLOGY
-# ══════════════════════════════════════════════════════════════════════════════
-
-st.markdown("---")
-with st.expander("ℹ️ Metodología y lectura de los gráficos"):
-    st.markdown("""
-    **Acumuladas de producción**
-    - Replica la hoja **Watchlist**: suma de `prod_pet`, `prod_gas`, `prod_agua` y `tef` por pozo.
-    - Solo ingresan al universo los pozos con **TEF acumulado ≥ intervalo elegido**.
-    - Disponible en 3 horizontes: 180 días, 1 año (365d) y 5 años (1825d).
-
-    **Cuadrantes y percentiles (convención hidrocarburos)**
-    | Percentil | Valor estadístico | Interpretación |
-    |-----------|-------------------|----------------|
-    | **P10**   | Q90 estadístico   | Pozo optimista (valor alto) |
-    | **P50**   | Mediana           | Referencia del universo |
-    | **P90**   | Q10 estadístico   | Pozo conservador (valor bajo) |
-
-    - Líneas **sólidas** = P50 (cruce de cuadrantes).
-    - Líneas **guionadas** = P10. Líneas **punteadas** = P90.
-
-    **Filtro en cascada (Empresa → Área → Sigla)**
-    - Al elegir empresa, las áreas disponibles se filtran automáticamente.
-    - Al elegir área, las siglas se filtran también.
-    - Prioridad de resaltado: Sigla > Área > Empresa.
-
-    **Heatmap de consistencia Alto-Alto**
-    - % de pozos de cada combinación Empresa × Área en el cuadrante Alto-Alto.
-    - Sólo combinaciones con ≥ 2 pozos en el universo.
-    - Verde intenso = el desempeño superior es **estructural**, no un outlier.
-
-    **Benchmark de Completación**
-    - Filtros de calidad aplicados (mismos que el resto del reporte):
-      longitud rama > 100 m · etapas > 6 · arena total > 100 tn.
-    - Las acumuladas disponibles en los ejes siguen el mismo criterio de TEF.
-    """)
