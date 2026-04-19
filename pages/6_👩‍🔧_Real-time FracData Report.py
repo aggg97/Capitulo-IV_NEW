@@ -71,7 +71,8 @@ df_vmut = df_vmut.replace([np.inf, -np.inf], np.nan)
 # One row per well for completion stats
 df_vmut_dedup = df_vmut[df_vmut["longitud_rama_horizontal_m"] > 0].drop_duplicates(subset="sigla")
 
-LEGEND_TOP   = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+# Constantes de layout 
+LEGEND_BOTTOM = dict(orientation="h", yanchor="top",   y=-0.20, xanchor="center", x=0.5)
 FLUID_COLORS = {"Petrolífero": "green", "Gasífero": "red"}
 X_AXIS_LABEL = "Campaña de Perforación"
 
@@ -85,11 +86,16 @@ def build_evolution_chart(
     y_label: str,
     group_col: str = "start_year",
     split_by_fluid: bool = False,
+    invert_percentiles: bool = False,
 ) -> go.Figure:
     """
     P10 / P50 / P90 evolution line chart grouped by start_year.
     Optionally splits by tipopozoNEW (Petrolífero / Gasífero).
-    P10 and P90 are shown as a shaded band; P50 as a solid line.
+
+    invert_percentiles=True  → convención producción de hidrocarburos:
+        P10 = optimista (valor alto, cuantil 0.90)
+        P90 = conservador (valor bajo, cuantil 0.10)
+    invert_percentiles=False → percentiles estadísticos directos (completación).
     """
     fig = go.Figure()
 
@@ -101,13 +107,26 @@ def build_evolution_chart(
     else:
         splits = [("Todos", df, "#1f77b4")]
 
+    # Asignación de cuantiles según convención
+    if invert_percentiles:
+        q_p10, q_p50, q_p90 = 0.90, 0.50, 0.10   # P10 optimista arriba
+    else:
+        q_p10, q_p50, q_p90 = 0.10, 0.50, 0.90   # P10 conservador abajo
+
+    # Colores de banda con transparencia
+    BAND_COLORS = {
+        "green":   "rgba(0,128,0,0.15)",
+        "red":     "rgba(255,0,0,0.15)",
+        "#1f77b4": "rgba(31,119,180,0.15)",
+    }
+
     for label, sub, color in splits:
         stats = (
             sub.groupby(group_col)[metric_col]
             .agg(
-                p10=lambda x: x.quantile(0.10),
-                p50=lambda x: x.quantile(0.50),
-                p90=lambda x: x.quantile(0.90),
+                p10=lambda x: x.quantile(q_p10),
+                p50=lambda x: x.quantile(q_p50),
+                p90=lambda x: x.quantile(q_p90),
             )
             .reset_index()
             .dropna(subset=["p50"])
@@ -115,35 +134,35 @@ def build_evolution_chart(
         if stats.empty:
             continue
 
-        suffix = f" — {label}" if split_by_fluid else ""
+        suffix     = f" — {label}" if split_by_fluid else ""
+        band_color = BAND_COLORS.get(color, "rgba(128,128,128,0.15)")
 
-        # P90 upper band (invisible line, fills down to P10)
-        fig.add_trace(go.Scatter(
-            x=stats[group_col],
-            y=stats["p90"],
-            mode="lines",
-            name=f"P90{suffix}",
-            line=dict(color=color, width=0),
-            showlegend=True,
-            legendgroup=label,
-            hovertemplate=f"Campaña: %{{x}}<br>P90: %{{y:.0f}}<extra>{label}</extra>",
-        ))
-        # P10 lower band (fills up to P90)
+        # Línea superior de la banda (P10 optimista = valor más alto)
         fig.add_trace(go.Scatter(
             x=stats[group_col],
             y=stats["p10"],
             mode="lines",
             name=f"P10{suffix}",
-            line=dict(color=color, width=0),
-            fill="tonexty",
-            fillcolor=color.replace("green", "rgba(0,128,0,0.15)")
-                           .replace("red",   "rgba(255,0,0,0.15)")
-                           .replace("#1f77b4", "rgba(31,119,180,0.15)"),
+            line=dict(color=color, width=1, dash="dot"),
             legendgroup=label,
             showlegend=True,
             hovertemplate=f"Campaña: %{{x}}<br>P10: %{{y:.0f}}<extra>{label}</extra>",
         ))
-        # P50 solid line
+        # Línea inferior de la banda (P90 conservador = valor más bajo)
+        # fill="tonexty" rellena desde esta traza hasta la anterior (P10)
+        fig.add_trace(go.Scatter(
+            x=stats[group_col],
+            y=stats["p90"],
+            mode="lines",
+            name=f"P90{suffix}",
+            line=dict(color=color, width=1, dash="dot"),
+            fill="tonexty",
+            fillcolor=band_color,
+            legendgroup=label,
+            showlegend=True,
+            hovertemplate=f"Campaña: %{{x}}<br>P90: %{{y:.0f}}<extra>{label}</extra>",
+        ))
+        # P50 línea sólida encima
         fig.add_trace(go.Scatter(
             x=stats[group_col],
             y=stats["p50"],
@@ -152,10 +171,11 @@ def build_evolution_chart(
             line=dict(color=color, width=2.5),
             marker=dict(size=7),
             legendgroup=label,
+            showlegend=True,
             hovertemplate=f"Campaña: %{{x}}<br>P50: %{{y:.0f}}<extra>{label}</extra>",
         ))
 
-        # Annotations on P50 only (keep chart readable)
+        # Anotaciones solo en P50
         for _, row in stats.iterrows():
             fig.add_annotation(
                 x=row[group_col], y=row["p50"],
@@ -169,7 +189,7 @@ def build_evolution_chart(
         xaxis_title=X_AXIS_LABEL,
         yaxis_title=y_label,
         template="plotly_white",
-        legend=LEGEND_TOP,
+        legend=LEGEND_BOTTOM,
     )
     return fig
 
@@ -215,7 +235,7 @@ with tab1:
         xaxis_title=X_AXIS_LABEL,
         yaxis_title="Cantidad de Pozos",
         template="plotly_white",
-        legend=LEGEND_TOP,
+        legend=LEGEND_BOTTOM,
     )
     st.plotly_chart(fig_wells, use_container_width=True)
 
@@ -252,7 +272,7 @@ with tab1:
         yaxis_title="Arena Bombeada (tn)",
         yaxis2=dict(title="% Arena Importada", overlaying="y", side="right"),
         template="plotly_white",
-        legend=LEGEND_TOP,
+        legend=LEGEND_BOTTOM,
     )
     st.write("### Evolucion de Arena Bombeada")
     st.plotly_chart(fig_arena, use_container_width=True)
@@ -316,6 +336,7 @@ with tab2:
             build_evolution_chart(
                 df_c, metric, title, y_label,
                 split_by_fluid=split_completion,
+                invert_percentiles=True,
             ),
             use_container_width=True,
         )
@@ -370,6 +391,7 @@ with tab3:
             build_evolution_chart(
                 df_p, metric, title, y_label,
                 split_by_fluid=split_productivity,
+                invert_percentiles=True,
             ),
             use_container_width=True,
         )
