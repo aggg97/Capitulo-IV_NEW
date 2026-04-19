@@ -133,17 +133,7 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """
     Builds a per-well summary with peak rates, cumulative production,
     start year, and EUR at 30 / 90 / 180 days.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Filtered production data. Must already contain 'tipopozoNEW'
-        (call get_fluid_classification first) and 'empresaNEW'.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per sigla with aggregated metrics.
+    Fully vectorized — no groupby+apply to avoid pandas 2.x index promotion bug.
     """
     if "tipopozoNEW" not in df.columns:
         raise ValueError(
@@ -151,29 +141,32 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             "Call get_fluid_classification(df) before create_summary_dataframe(df)."
         )
 
-    df = df.copy()
+    df = df.copy().sort_values(["sigla", "date"])
+
     df["Qo_peak"]    = df.groupby("sigla")["oil_rate"].transform("max")
     df["Qg_peak"]    = df.groupby("sigla")["gas_rate"].transform("max")
     df["start_year"] = df.groupby("sigla")["anio"].transform("min")
 
-    def calculate_eur(group):
-        group      = group.sort_values("date")
-        start_date = group["date"].iloc[0]
-        cum_col    = "Np" if group["tipopozoNEW"].iloc[0] == "Petrolífero" else "Gp"
-        for col, days in [("EUR_30", 30), ("EUR_90", 90), ("EUR_180", 180)]:
-            cutoff     = start_date + relativedelta(days=days)
-            group[col] = group.loc[group["date"] <= cutoff, cum_col].max()
-        return group
+    # Fecha de inicio por pozo
+    df["_start_date"] = df.groupby("sigla")["date"].transform("first")
 
-    # Fix para pandas 2.x: groupby+apply puede promover 'sigla' al índice
-    # en lugar de mantenerla como columna, rompiendo el groupby posterior.
-    df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
-    if df.index.name == "sigla" or "sigla" not in df.columns:
-        df = df.reset_index()
-    else:
-        df = df.reset_index(drop=True)
+    # Tipo de fluido por pozo
+    df["_fluid"] = df.groupby("sigla")["tipopozoNEW"].transform("first")
 
-    # Build agg dict — only include optional columns if present in df
+    # EUR vectorizado: para cada intervalo, marcar filas dentro de la ventana
+    # y tomar el máximo de Np o Gp según tipo
+    for col, days in [("EUR_30", 30), ("EUR_90", 90), ("EUR_180", 180)]:
+        within = df["date"] <= (df["_start_date"] + pd.to_timedelta(days, unit="D"))
+        # Valor acumulado: Np si petrolífero, Gp si gasífero
+        val = df["Np"].where(df["_fluid"] == "Petrolífero", df["Gp"])
+        df[col] = (
+            val.where(within)
+               .groupby(df["sigla"])
+               .transform("max")
+        )
+
+    df = df.drop(columns=["_start_date", "_fluid"], errors="ignore")
+
     agg = dict(
         date       =("date",       "first"),
         start_year =("start_year", "first"),
