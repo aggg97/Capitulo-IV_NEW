@@ -3,16 +3,13 @@
 
 Benchmark de Producción y Completación — análisis de cuadrantes P10/P50/P90.
 
-Secciones
-─────────
-1. Benchmark de Producción (Gas / Petróleo)
-   • Cuadrante: Q_pico vs Acumulada (Gp o Np)
-   • Cuadrante: Q_pico vs Acumulada de Agua (Wp)
-   Visualiza TODOS los pozos en gris; el usuario resalta área, empresa o sigla.
-
-2. Benchmark de Completación
-   • Ejes configurables con variables del dataset de fractura.
-   Misma lógica de resaltado.
+Cambios v2
+──────────
+- Acumulada calculada igual que Watchlist: TEF acumulado >= intervalo de días.
+  El usuario elige 180d, 1 año (365d) o 5 años (1825d).
+- Benchmark de Completación incluye acumuladas a los mismos intervalos.
+- Filtro cascada: empresa → área (filtrada por empresa) → sigla.
+- Al pie de cada cuadrante: tabla de líderes Alto-Alto + heatmap de consistencia.
 """
 
 import numpy as np
@@ -25,79 +22,105 @@ from utils import (
     COMPANY_REPLACEMENTS,
     get_fluid_classification,
     load_frac_data,
-    create_summary_dataframe,
 )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HELPERS
+# CONSTANTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def percentile_lines(series: pd.Series, q: float) -> float:
-    """Return quantile ignoring NaN/inf."""
-    clean = series.replace([np.inf, -np.inf], np.nan).dropna()
+INTERVALS = {"180 días": 180, "1 año (365d)": 365, "5 años (1825d)": 1825}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS — CUMULATIVE PRODUCTION  (same logic as Watchlist)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cumulative_at_interval(df: pd.DataFrame, interval_days: int) -> pd.DataFrame:
+    """
+    Mirrors Watchlist exactly:
+      - sums prod_pet, prod_gas, prod_agua and tef per well
+      - keeps wells where tef_sum >= interval_days
+    Returns one row per sigla.
+    """
+    grp = (
+        df.groupby("sigla")
+        .agg(
+            oil_cum       =("prod_pet",        "sum"),
+            gas_cum       =("prod_gas",         "sum"),
+            water_cum     =("prod_agua",        "sum"),
+            tef_cum       =("tef",              "sum"),
+            empresaNEW    =("empresaNEW",       "first"),
+            areayacimiento=("areayacimiento",   "first"),
+            tipopozoNEW   =("tipopozoNEW",      "first"),
+        )
+        .reset_index()
+    )
+    return grp[grp["tef_cum"] >= interval_days].copy()
+
+
+def build_prod_summary(data_filtered: pd.DataFrame, interval_days: int) -> pd.DataFrame:
+    """Cumulative volumes + peak rates, one row per sigla."""
+    cum   = cumulative_at_interval(data_filtered, interval_days)
+    peaks = (
+        data_filtered.groupby("sigla")
+        .agg(Qo_peak=("oil_rate", "max"), Qg_peak=("gas_rate", "max"))
+        .reset_index()
+    )
+    return cum.merge(peaks, on="sigla", how="left")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS — QUADRANT CHART
+# ══════════════════════════════════════════════════════════════════════════════
+
+def pct_q(s: pd.Series, q: float) -> float:
+    clean = s.replace([np.inf, -np.inf], np.nan).dropna()
     return float(clean.quantile(q)) if not clean.empty else np.nan
 
 
-def add_quadrant_lines(fig, x_p50, y_p50, x_p10, y_p10, x_p90, y_p90,
-                        x_label, y_label, x_range=None, y_range=None):
-    """
-    Adds P50 crosshairs and P10/P90 sub-quadrant dashed rectangles.
-    Uses production convention: P10 = optimistic (high value).
-    """
-    line_kw = dict(line_color="rgba(80,80,80,0.55)", line_width=1.2)
+def _clip(df: pd.DataFrame, col: str) -> pd.Series:
+    s = df[col].replace([np.inf, -np.inf], np.nan).dropna()
+    if s.empty:
+        return df[col]
+    lo, hi = np.nanpercentile(s, [0.5, 99.5])
+    return df[col].clip(lo, hi)
 
-    # P50 solid lines
-    fig.add_vline(x=x_p50, line_dash="solid", line_color="rgba(50,50,50,0.70)",
-                  line_width=1.8, annotation_text=f"P50 {x_label}",
+
+def add_quadrant_lines(fig, x_p50, y_p50, x_p10, y_p10, x_p90, y_p90, xl, yl):
+    kw = dict(line_color="rgba(80,80,80,0.48)", line_width=1.1)
+    fig.add_vline(x=x_p50, line_dash="solid", line_color="rgba(35,35,35,0.72)",
+                  line_width=1.8, annotation_text=f"P50 {xl}",
                   annotation_position="top right",
-                  annotation_font=dict(size=10, color="rgba(50,50,50,0.85)"))
-    fig.add_hline(y=y_p50, line_dash="solid", line_color="rgba(50,50,50,0.70)",
-                  line_width=1.8, annotation_text=f"P50 {y_label}",
+                  annotation_font=dict(size=9, color="rgba(35,35,35,0.82)"))
+    fig.add_hline(y=y_p50, line_dash="solid", line_color="rgba(35,35,35,0.72)",
+                  line_width=1.8, annotation_text=f"P50 {yl}",
                   annotation_position="top right",
-                  annotation_font=dict(size=10, color="rgba(50,50,50,0.85)"))
-
-    # P10 dashed lines (optimistic threshold)
-    fig.add_vline(x=x_p10, line_dash="dash", **line_kw,
-                  annotation_text=f"P10 {x_label}",
-                  annotation_position="bottom right",
-                  annotation_font=dict(size=9, color="rgba(80,80,80,0.75)"))
-    fig.add_hline(y=y_p10, line_dash="dash", **line_kw,
-                  annotation_text=f"P10 {y_label}",
-                  annotation_position="top left",
-                  annotation_font=dict(size=9, color="rgba(80,80,80,0.75)"))
-
-    # P90 dashed lines (conservative threshold)
-    fig.add_vline(x=x_p90, line_dash="dot", **line_kw,
-                  annotation_text=f"P90 {x_label}",
-                  annotation_position="bottom right",
-                  annotation_font=dict(size=9, color="rgba(80,80,80,0.75)"))
-    fig.add_hline(y=y_p90, line_dash="dot", **line_kw,
-                  annotation_text=f"P90 {y_label}",
-                  annotation_position="top left",
-                  annotation_font=dict(size=9, color="rgba(80,80,80,0.75)"))
-
+                  annotation_font=dict(size=9, color="rgba(35,35,35,0.82)"))
+    for x_val, lbl, pos in [(x_p10, f"P10 {xl}", "bottom right"),
+                             (x_p90, f"P90 {xl}", "bottom right")]:
+        dash = "dash" if "P10" in lbl else "dot"
+        fig.add_vline(x=x_val, line_dash=dash, **kw,
+                      annotation_text=lbl, annotation_position=pos,
+                      annotation_font=dict(size=8, color="rgba(80,80,80,0.68)"))
+    for y_val, lbl, pos in [(y_p10, f"P10 {yl}", "top left"),
+                             (y_p90, f"P90 {yl}", "top left")]:
+        dash = "dash" if "P10" in lbl else "dot"
+        fig.add_hline(y=y_val, line_dash=dash, **kw,
+                      annotation_text=lbl, annotation_position=pos,
+                      annotation_font=dict(size=8, color="rgba(80,80,80,0.68)"))
     return fig
 
 
 def add_quadrant_labels(fig, x_p50, y_p50, x_max, y_max, x_min, y_min):
-    """Annotate the four quadrant zones."""
-    labels = [
-        (x_p50 + (x_max - x_p50) * 0.5, y_p50 + (y_max - y_p50) * 0.5,
-         "⭐ Alto-Alto", "rgba(34,139,34,0.18)"),
-        (x_min + (x_p50 - x_min) * 0.5, y_p50 + (y_max - y_p50) * 0.5,
-         "Alta Q, Baja Acum.", "rgba(255,165,0,0.12)"),
-        (x_p50 + (x_max - x_p50) * 0.5, y_min + (y_p50 - y_min) * 0.5,
-         "Alta Acum., Baja Q", "rgba(100,149,237,0.12)"),
-        (x_min + (x_p50 - x_min) * 0.5, y_min + (y_p50 - y_min) * 0.5,
-         "⚠️ Bajo-Bajo", "rgba(220,20,60,0.10)"),
-    ]
-    for x, y, txt, _ in labels:
-        fig.add_annotation(
-            x=x, y=y, text=txt, showarrow=False,
-            font=dict(size=9, color="rgba(60,60,60,0.60)"),
-            bgcolor="rgba(255,255,255,0.0)",
-        )
+    for x, y, txt in [
+        (x_p50 + (x_max - x_p50) * 0.50, y_p50 + (y_max - y_p50) * 0.55, "⭐ Alto–Alto"),
+        (x_min + (x_p50 - x_min) * 0.50, y_p50 + (y_max - y_p50) * 0.55, "Alta Q · Baja Acum."),
+        (x_p50 + (x_max - x_p50) * 0.50, y_min + (y_p50 - y_min) * 0.45, "Alta Acum. · Baja Q"),
+        (x_min + (x_p50 - x_min) * 0.50, y_min + (y_p50 - y_min) * 0.45, "⚠️ Bajo–Bajo"),
+    ]:
+        fig.add_annotation(x=x, y=y, text=txt, showarrow=False,
+                           font=dict(size=9, color="rgba(60,60,60,0.52)"))
     return fig
 
 
@@ -114,105 +137,207 @@ def build_quadrant_chart(
     log_x: bool = False,
     log_y: bool = False,
 ) -> go.Figure:
-    """
-    Scatter quadrant chart.
-    df_all      → all wells in light grey.
-    df_highlight → selected subset in highlight colour.
-    """
-    # Clip extremes for cleaner axes (1st–99th pct)
-    def clip(s):
-        lo, hi = np.nanpercentile(s.replace([np.inf, -np.inf], np.nan).dropna(), [0.5, 99.5])
-        return s.clip(lo, hi)
 
     df_all = df_all.copy()
-    df_all[x_col] = clip(df_all[x_col])
-    df_all[y_col] = clip(df_all[y_col])
+    df_all[x_col] = _clip(df_all, x_col)
+    df_all[y_col] = _clip(df_all, y_col)
 
-    # Percentiles (production convention: P10 = high = optimistic)
-    x_p10 = percentile_lines(df_all[x_col], 0.90)
-    x_p50 = percentile_lines(df_all[x_col], 0.50)
-    x_p90 = percentile_lines(df_all[x_col], 0.10)
-    y_p10 = percentile_lines(df_all[y_col], 0.90)
-    y_p50 = percentile_lines(df_all[y_col], 0.50)
-    y_p90 = percentile_lines(df_all[y_col], 0.10)
+    x_p10 = pct_q(df_all[x_col], 0.90)
+    x_p50 = pct_q(df_all[x_col], 0.50)
+    x_p90 = pct_q(df_all[x_col], 0.10)
+    y_p10 = pct_q(df_all[y_col], 0.90)
+    y_p50 = pct_q(df_all[y_col], 0.50)
+    y_p90 = pct_q(df_all[y_col], 0.10)
+    x_min, x_max = df_all[x_col].min(), df_all[x_col].max()
+    y_min, y_max = df_all[y_col].min(), df_all[y_col].max()
 
-    x_min = df_all[x_col].min()
-    x_max = df_all[x_col].max()
-    y_min = df_all[y_col].min()
-    y_max = df_all[y_col].max()
+    # hover columns always present
+    cd_cols = ["sigla", "empresaNEW", "areayacimiento"]
+    cd_cols = [c for c in cd_cols if c in df_all.columns]
+
+    htmpl = (
+        "<b>%{customdata[0]}</b><br>"
+        + (f"Empresa: %{{customdata[1]}}<br>" if len(cd_cols) > 1 else "")
+        + (f"Área: %{{customdata[2]}}<br>"    if len(cd_cols) > 2 else "")
+        + f"{x_label}: %{{x:,.0f}}<br>{y_label}: %{{y:,.0f}}"
+    )
 
     fig = go.Figure()
-
-    # Background — all wells
     fig.add_trace(go.Scatter(
-        x=df_all[x_col],
-        y=df_all[y_col],
-        mode="markers",
-        name="Todos los pozos",
-        marker=dict(color="rgba(180,180,180,0.35)", size=5, line=dict(width=0)),
-        hovertemplate=(
-            "<b>%{customdata[0]}</b><br>"
-            f"{x_label}: %{{x:,.0f}}<br>"
-            f"{y_label}: %{{y:,.0f}}"
-            "<extra>Universo</extra>"
-        ),
-        customdata=df_all[["sigla"]].values,
+        x=df_all[x_col], y=df_all[y_col],
+        mode="markers", name="Todos los pozos",
+        marker=dict(color="rgba(175,175,175,0.30)", size=5, line=dict(width=0)),
+        hovertemplate=htmpl + "<extra>Universo</extra>",
+        customdata=df_all[cd_cols].values,
     ))
 
-    # Highlight
     if not df_highlight.empty:
         df_hl = df_highlight.copy()
-        df_hl[x_col] = clip(df_hl[x_col])
-        df_hl[y_col] = clip(df_hl[y_col])
+        df_hl[x_col] = _clip(df_hl, x_col)
+        df_hl[y_col] = _clip(df_hl, y_col)
         fig.add_trace(go.Scatter(
-            x=df_hl[x_col],
-            y=df_hl[y_col],
-            mode="markers",
-            name=highlight_label,
-            marker=dict(
-                color=highlight_color,
-                size=9,
-                line=dict(width=1.2, color="white"),
-                symbol="circle",
-            ),
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                f"{x_label}: %{{x:,.0f}}<br>"
-                f"{y_label}: %{{y:,.0f}}"
-                "<extra>" + highlight_label + "</extra>"
-            ),
-            customdata=df_hl[["sigla"]].values,
+            x=df_hl[x_col], y=df_hl[y_col],
+            mode="markers", name=highlight_label,
+            marker=dict(color=highlight_color, size=9,
+                        line=dict(width=1.3, color="white")),
+            hovertemplate=htmpl + f"<extra>{highlight_label}</extra>",
+            customdata=df_hl[cd_cols].values,
         ))
 
-    # Quadrant lines
-    add_quadrant_lines(fig, x_p50, y_p50, x_p10, y_p10, x_p90, y_p90,
-                       x_label, y_label)
+    add_quadrant_lines(fig, x_p50, y_p50, x_p10, y_p10, x_p90, y_p90, x_label, y_label)
     add_quadrant_labels(fig, x_p50, y_p50, x_max, y_max, x_min, y_min)
 
     fig.update_layout(
         title=dict(text=title, font=dict(size=15)),
-        xaxis=dict(
-            title=x_label,
-            type="log" if log_x else "linear",
-            showgrid=True, gridcolor="rgba(200,200,200,0.3)",
-            zeroline=False,
-        ),
-        yaxis=dict(
-            title=y_label,
-            type="log" if log_y else "linear",
-            showgrid=True, gridcolor="rgba(200,200,200,0.3)",
-            zeroline=False,
-        ),
+        xaxis=dict(title=x_label, type="log" if log_x else "linear",
+                   showgrid=True, gridcolor="rgba(200,200,200,0.28)", zeroline=False),
+        yaxis=dict(title=y_label, type="log" if log_y else "linear",
+                   showgrid=True, gridcolor="rgba(200,200,200,0.28)", zeroline=False),
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=520,
-        margin=dict(l=60, r=30, t=70, b=60),
+        height=530,
+        margin=dict(l=65, r=35, t=80, b=65),
     )
     return fig
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SESSION STATE & DATA LOADING
+# HELPERS — ALTO-ALTO LEADERS + CONSISTENCY HEATMAP
+# ══════════════════════════════════════════════════════════════════════════════
+
+def render_leaders(
+    df_universe: pd.DataFrame,
+    x_col: str, y_col: str,
+    x_label: str, y_label: str,
+    fluid_label: str, section_key: str,
+):
+    x_p50 = pct_q(df_universe[x_col], 0.50)
+    y_p50 = pct_q(df_universe[y_col], 0.50)
+    df_aa  = df_universe[(df_universe[x_col] >= x_p50) & (df_universe[y_col] >= y_p50)].copy()
+
+    if df_aa.empty:
+        st.caption("No hay pozos en el cuadrante Alto-Alto.")
+        return
+
+    pct_aa_univ = len(df_aa) / len(df_universe) * 100
+    st.markdown(
+        f"**{len(df_aa)} pozos** ({pct_aa_univ:.1f}% del universo {fluid_label}) "
+        f"están en el cuadrante ⭐ Alto–Alto."
+    )
+
+    # ── Top wells table ───────────────────────────────────────────────────────
+    show_cols  = [c for c in ["sigla", "empresaNEW", "areayacimiento", x_col, y_col] if c in df_aa.columns]
+    rename_map = {"sigla": "Pozo", "empresaNEW": "Empresa",
+                  "areayacimiento": "Área", x_col: x_label, y_col: y_label}
+    st.markdown("**Top 15 pozos del cuadrante Alto–Alto** (ordenados por eje Y)")
+    st.dataframe(
+        df_aa[show_cols].rename(columns=rename_map)
+        .sort_values(y_label, ascending=False).head(15).reset_index(drop=True),
+        use_container_width=True, hide_index=True,
+    )
+
+    # ── Consistency heatmap ───────────────────────────────────────────────────
+    if "empresaNEW" not in df_aa.columns or "areayacimiento" not in df_aa.columns:
+        return
+
+    aa_cnt  = (df_aa.groupby(["empresaNEW", "areayacimiento"])["sigla"].nunique()
+               .reset_index(name="aa_n"))
+    tot_cnt = (df_universe.groupby(["empresaNEW", "areayacimiento"])["sigla"].nunique()
+               .reset_index(name="tot_n"))
+    heat    = tot_cnt.merge(aa_cnt, on=["empresaNEW", "areayacimiento"], how="left")
+    heat["aa_n"]   = heat["aa_n"].fillna(0)
+    heat["pct"]    = (heat["aa_n"] / heat["tot_n"] * 100).round(1)
+    heat           = heat[heat["tot_n"] >= 2]
+
+    if heat.empty:
+        st.caption("No hay suficientes datos para el heatmap (mínimo 2 pozos por combinación).")
+        return
+
+    pivot = heat.pivot_table(index="empresaNEW", columns="areayacimiento",
+                              values="pct", fill_value=np.nan)
+    row_ord = pivot.mean(axis=1).sort_values(ascending=False).index
+    col_ord = pivot.mean(axis=0).sort_values(ascending=False).index
+    pivot   = pivot.loc[row_ord, col_ord]
+    txt_v   = pivot.applymap(lambda v: f"{v:.0f}%" if pd.notna(v) else "—").values
+
+    fig_h = go.Figure(go.Heatmap(
+        z=pivot.values, x=pivot.columns.tolist(), y=pivot.index.tolist(),
+        colorscale="YlGn", zmin=0, zmax=100,
+        text=txt_v, texttemplate="%{text}", textfont=dict(size=9),
+        hoverongaps=False,
+        colorbar=dict(title="% Alto-Alto", ticksuffix="%"),
+        hovertemplate="Empresa: %{y}<br>Área: %{x}<br>% Alto-Alto: %{z:.1f}%<extra></extra>",
+    ))
+    fig_h.update_layout(
+        template="plotly_white",
+        title=f"Heatmap de consistencia — % pozos Alto-Alto · {fluid_label}",
+        xaxis=dict(title="Área de Yacimiento", tickangle=-35),
+        yaxis_title="Empresa",
+        height=max(300, 32 * len(pivot) + 130),
+        margin=dict(l=165, r=30, t=60, b=130),
+    )
+    st.markdown("**Heatmap de consistencia — % de pozos Alto-Alto por Empresa × Área:**")
+    st.caption("Verde intenso = alta consistencia. Solo combinaciones con ≥ 2 pozos en el universo.")
+    st.plotly_chart(fig_h, use_container_width=True, key=f"heat_{section_key}")
+
+    # ── Empresa ranking ───────────────────────────────────────────────────────
+    emp_rank = (
+        heat.groupby("empresaNEW")
+        .apply(lambda g: pd.Series({
+            "Pozos Alto-Alto": int(g["aa_n"].sum()),
+            "Pozos Universo":  int(g["tot_n"].sum()),
+            "% Alto-Alto":     round(g["aa_n"].sum() / g["tot_n"].sum() * 100, 1),
+        }))
+        .reset_index()
+        .rename(columns={"empresaNEW": "Empresa"})
+        .sort_values("% Alto-Alto", ascending=False)
+        .reset_index(drop=True)
+    )
+    st.markdown("**Ranking de empresas por % de pozos en Alto-Alto:**")
+    st.dataframe(emp_rank, use_container_width=True, hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS — CASCADED FILTER  (empresa → area → sigla)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def cascaded_filter(df: pd.DataFrame, key_prefix: str):
+    """
+    Three-column cascaded selectors.
+    Returns (mask: pd.Series, label: str).
+    """
+    col1, col2, col3 = st.columns(3)
+
+    companies = ["(Todas)"] + sorted(df["empresaNEW"].dropna().unique())
+    sel_co    = col1.selectbox("Empresa:", companies, key=f"{key_prefix}_co")
+
+    df_area = df if sel_co == "(Todas)" else df[df["empresaNEW"] == sel_co]
+    areas   = ["(Todas)"] + sorted(df_area["areayacimiento"].dropna().unique())
+    sel_ar  = col2.selectbox("Área de Yacimiento:", areas, key=f"{key_prefix}_ar")
+
+    df_sig  = df_area if sel_ar == "(Todas)" else df_area[df_area["areayacimiento"] == sel_ar]
+    siglas  = ["(Ninguna)"] + sorted(df_sig["sigla"].dropna().unique())
+    sel_sig = col3.selectbox("Sigla (pozo):", siglas, key=f"{key_prefix}_sig")
+
+    # Priority: sigla > area > company
+    if sel_sig != "(Ninguna)":
+        mask  = df["sigla"] == sel_sig
+        label = sel_sig
+    elif sel_ar != "(Todas)":
+        mask  = df["areayacimiento"] == sel_ar
+        label = sel_ar
+    elif sel_co != "(Todas)":
+        mask  = df["empresaNEW"] == sel_co
+        label = sel_co
+    else:
+        mask  = pd.Series(False, index=df.index)
+        label = "Selección"
+
+    return mask, label
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SESSION STATE & COMMON DATA
 # ══════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(layout="wide")
@@ -231,32 +356,27 @@ else:
     st.warning("⚠️ No se han cargado los datos. Por favor, vuelve a la Página Principal.")
     st.stop()
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 st.header(":blue[📐 Análisis Comparativo Avanzado]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 
 data_filtered = data_sorted[data_sorted["tef"] > 0]
 
-# Summary per well
-with st.spinner("Calculando métricas por pozo…"):
-    summary_df = create_summary_dataframe(data_filtered)
-
-# Fracture data
 with st.spinner("Cargando datos de fractura…"):
     df_frac = load_frac_data()
 
-# Merge for completation benchmark
-df_merged = (
-    pd.merge(df_frac, summary_df, on="sigla", how="inner")
-    .drop_duplicates(subset="sigla")
-)
-df_merged["fracspacing"]       = df_merged["longitud_rama_horizontal_m"] / df_merged["cantidad_fracturas"]
-df_merged["prop_x_etapa"]      = df_merged["arena_total_tn"] / df_merged["cantidad_fracturas"]
-df_merged["proppant_intensity"] = df_merged["arena_total_tn"] / df_merged["longitud_rama_horizontal_m"]
-df_merged["AS_x_vol"]          = df_merged["arena_total_tn"] / (df_merged["agua_inyectada_m3"].replace(0, np.nan) / 1000)
-df_merged["Qo_peak_x_etapa"]   = df_merged["Qo_peak"] / df_merged["cantidad_fracturas"]
-df_merged["Qg_peak_x_etapa"]   = df_merged["Qg_peak"] / df_merged["cantidad_fracturas"]
-df_merged = df_merged.replace([np.inf, -np.inf], np.nan)
+# Pre-build cumulative summaries for all intervals (cached via function argument hash)
+@st.cache_data
+def all_cum_summaries(_df):
+    """Returns dict {label: DataFrame with oil_cum, gas_cum, water_cum, tef_cum + meta}"""
+    out = {}
+    for lbl, days in INTERVALS.items():
+        c = cumulative_at_interval(_df, days)
+        out[lbl] = c
+    return out
+
+# We pass a hashable proxy — use the shape + a sample to bust cache on reload
+_cache_key = (len(data_filtered), int(data_filtered["prod_pet"].sum()))
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — BENCHMARK DE PRODUCCIÓN
@@ -266,157 +386,91 @@ st.markdown("---")
 st.subheader("🛢️ Benchmark de Producción", divider="blue")
 
 st.markdown("""
-Todos los pozos del dataset se grafican en **gris claro** como universo de referencia.  
-Los cuadrantes P10 / P50 / P90 se calculan sobre ese universo.  
-Usá los filtros para resaltar un área, empresa o pozo específico.
+Todos los pozos con **TEF acumulado ≥ intervalo seleccionado** integran el universo de referencia
+(misma lógica que hoja **Watchlist**). Los cuadrantes P10/P50/P90 se calculan sobre ese universo.
 """)
 
-# ── Fluid selector ────────────────────────────────────────────────────────────
-fluid_prod = st.radio(
-    "Tipo de Fluido:",
-    ["Petrolífero", "Gasífero"],
-    horizontal=True,
-    key="fluid_prod",
-)
+# ── Controls ──────────────────────────────────────────────────────────────────
+ctrl1, ctrl2 = st.columns(2)
+fluid_prod    = ctrl1.radio("Tipo de Fluido:", ["Petrolífero", "Gasífero"],
+                             horizontal=True, key="fluid_prod")
+interval_lbl  = ctrl2.selectbox("Intervalo de acumulada:",
+                                  list(INTERVALS.keys()), index=1, key="int_prod")
+interval_days = INTERVALS[interval_lbl]
 
-is_oil = fluid_prod == "Petrolífero"
-peak_col   = "Qo_peak"  if is_oil else "Qg_peak"
-cum_col    = "Np"       if is_oil else "Gp"
-peak_label = "Qo Pico (m³/d)" if is_oil else "Qg Pico (km³/d)"
-cum_label  = "Np Acumulada (m³)" if is_oil else "Gp Acumulada (km³)"
-water_col  = "Wp"
-water_label = "Wp Acumulada Agua (m³)"
+is_oil     = fluid_prod == "Petrolífero"
+peak_col   = "Qo_peak"   if is_oil else "Qg_peak"
+cum_col    = "oil_cum"   if is_oil else "gas_cum"
+peak_label = "Qo Pico (m³/d)"             if is_oil else "Qg Pico (km³/d)"
+cum_label  = f"Np @ {interval_lbl} (m³)"  if is_oil else f"Gp @ {interval_lbl} (km³)"
+water_label = f"Wp @ {interval_lbl} (m³)"
 
-# Universe for selected fluid type
-summary_fluid = summary_df[summary_df["tipopozoNEW"] == fluid_prod].copy()
-summary_fluid = summary_fluid.dropna(subset=[peak_col, cum_col, water_col])
+with st.spinner(f"Calculando acumuladas @ {interval_lbl}…"):
+    prod_sum = build_prod_summary(data_filtered, interval_days)
 
-# ── Highlight filter ──────────────────────────────────────────────────────────
+summary_fluid = prod_sum[prod_sum["tipopozoNEW"] == fluid_prod].dropna(subset=[peak_col, cum_col])
+
+if summary_fluid.empty:
+    st.warning(f"No hay pozos con TEF ≥ {interval_days} días para {fluid_prod}.")
+    st.stop()
+
+# ── Cascaded filter ───────────────────────────────────────────────────────────
 st.markdown("#### 🎯 Filtro de Resaltado")
-col_filt1, col_filt2, col_filt3 = st.columns(3)
+hl_mask_p, hl_label_p = cascaded_filter(summary_fluid, "prod")
+df_hl_p = summary_fluid[hl_mask_p]
 
-with col_filt1:
-    areas_prod = ["(Ninguna)"] + sorted(
-        data_filtered["areayacimiento"].dropna().unique()
-    )
-    selected_area_prod = st.selectbox("Área de Yacimiento:", areas_prod, key="area_prod")
+log1, log2 = st.columns(2)
+log_x_p = log1.checkbox("Log eje X (acumulada)", key="lx_p")
+log_y_p = log2.checkbox("Log eje Y (caudal pico)", key="ly_p")
 
-with col_filt2:
-    companies_prod = ["(Ninguna)"] + sorted(
-        summary_fluid["empresaNEW"].dropna().unique()
-    )
-    selected_company_prod = st.selectbox("Empresa:", companies_prod, key="company_prod")
-
-with col_filt3:
-    # Build sigla list from the fluid-filtered summary
-    siglas_prod = ["(Ninguna)"] + sorted(summary_fluid["sigla"].dropna().unique())
-    selected_sigla_prod = st.selectbox("Sigla (pozo):", siglas_prod, key="sigla_prod")
-
-# Log scale toggle
-col_log1, col_log2 = st.columns(2)
-log_x_prod = col_log1.checkbox("Escala log eje X (acumulada)", key="logx_prod")
-log_y_prod = col_log2.checkbox("Escala log eje Y (caudal pico)", key="logy_prod")
-
-# Build highlight mask
-def build_highlight_mask(df: pd.DataFrame, area, company, sigla, area_map: dict) -> pd.Series:
-    """Returns boolean mask. Priority: sigla > company > area."""
-    mask = pd.Series(False, index=df.index)
-    if sigla != "(Ninguna)":
-        mask = df["sigla"] == sigla
-    elif company != "(Ninguna)":
-        mask = df["empresaNEW"] == company
-    elif area != "(Ninguna)":
-        siglas_in_area = area_map.get(area, set())
-        mask = df["sigla"].isin(siglas_in_area)
-    return mask
-
-# Map area → siglas (from production data)
-area_to_siglas = (
-    data_filtered.groupby("areayacimiento")["sigla"]
-    .apply(set)
-    .to_dict()
+# ── Chart 1a ──────────────────────────────────────────────────────────────────
+st.markdown(f"#### {peak_label} vs {cum_label}")
+fig1a = build_quadrant_chart(
+    df_all=summary_fluid, df_highlight=df_hl_p,
+    x_col=cum_col, y_col=peak_col,
+    x_label=cum_label, y_label=peak_label,
+    title=f"Benchmark {fluid_prod}: Caudal Pico vs Producción Acumulada ({interval_lbl})",
+    highlight_label=hl_label_p,
+    highlight_color="#E63946" if is_oil else "#1565C0",
+    log_x=log_x_p, log_y=log_y_p,
 )
+st.plotly_chart(fig1a, use_container_width=True)
 
-hl_mask_prod = build_highlight_mask(
-    summary_fluid,
-    selected_area_prod,
-    selected_company_prod,
-    selected_sigla_prod,
-    area_to_siglas,
+if not df_hl_p.empty:
+    c1, c2, c3 = st.columns(3)
+    c1.metric(peak_label,  f"{df_hl_p[peak_col].median():,.0f}")
+    c2.metric(cum_label,   f"{df_hl_p[cum_col].median():,.0f}")
+    c3.metric("N° Pozos",  len(df_hl_p))
+    rx = (summary_fluid[cum_col].dropna()  < df_hl_p[cum_col].median()).mean()  * 100
+    ry = (summary_fluid[peak_col].dropna() < df_hl_p[peak_col].median()).mean() * 100
+    st.caption(f"Percentil **{rx:.0f}** en {cum_label} · percentil **{ry:.0f}** en {peak_label} vs universo {fluid_prod}.")
+
+with st.expander("⭐ Líderes del cuadrante Alto-Alto", expanded=False):
+    render_leaders(summary_fluid, cum_col, peak_col, cum_label, peak_label,
+                   fluid_prod, "p1a")
+
+st.divider()
+
+# ── Chart 1b: Q_pico vs Agua ──────────────────────────────────────────────────
+sum_w   = summary_fluid.dropna(subset=[peak_col, "water_cum"])
+df_hl_w = sum_w[sum_w["sigla"].isin(df_hl_p["sigla"])]
+
+st.markdown(f"#### {peak_label} vs {water_label}")
+fig1b = build_quadrant_chart(
+    df_all=sum_w, df_highlight=df_hl_w,
+    x_col="water_cum", y_col=peak_col,
+    x_label=water_label, y_label=peak_label,
+    title=f"Benchmark {fluid_prod}: Caudal Pico vs Agua Acumulada ({interval_lbl})",
+    highlight_label=hl_label_p,
+    highlight_color="#E63946" if is_oil else "#1565C0",
+    log_x=log_x_p, log_y=log_y_p,
 )
+st.plotly_chart(fig1b, use_container_width=True)
 
-df_hl_prod = summary_fluid[hl_mask_prod]
+with st.expander("⭐ Líderes del cuadrante Alto-Alto (Q_pico vs Agua)", expanded=False):
+    render_leaders(sum_w, "water_cum", peak_col, water_label, peak_label,
+                   fluid_prod, "p1b")
 
-hl_label_prod = (
-    selected_sigla_prod   if selected_sigla_prod   != "(Ninguna)" else
-    selected_company_prod if selected_company_prod != "(Ninguna)" else
-    selected_area_prod    if selected_area_prod    != "(Ninguna)" else
-    "Selección"
-)
-
-# ── Chart 1a: Q_pico vs Acumulada ─────────────────────────────────────────────
-st.markdown(f"#### Cuadrante: {peak_label} vs {cum_label}")
-fig_prod1 = build_quadrant_chart(
-    df_all=summary_fluid,
-    df_highlight=df_hl_prod,
-    x_col=cum_col,
-    y_col=peak_col,
-    x_label=cum_label,
-    y_label=peak_label,
-    title=f"Benchmark {fluid_prod}: Caudal Pico vs Producción Acumulada",
-    highlight_label=hl_label_prod,
-    highlight_color="#E63946" if is_oil else "#2196F3",
-    log_x=log_x_prod,
-    log_y=log_y_prod,
-)
-st.plotly_chart(fig_prod1, use_container_width=True)
-
-# ── Chart 1b: Q_pico vs Agua acumulada ────────────────────────────────────────
-st.markdown(f"#### Cuadrante: {peak_label} vs {water_label}")
-
-summary_fluid_w = summary_fluid.dropna(subset=[peak_col, water_col])
-df_hl_prod_w    = summary_fluid_w[summary_fluid_w["sigla"].isin(df_hl_prod["sigla"])]
-
-fig_prod2 = build_quadrant_chart(
-    df_all=summary_fluid_w,
-    df_highlight=df_hl_prod_w,
-    x_col=water_col,
-    y_col=peak_col,
-    x_label=water_label,
-    y_label=peak_label,
-    title=f"Benchmark {fluid_prod}: Caudal Pico vs Agua Acumulada",
-    highlight_label=hl_label_prod,
-    highlight_color="#E63946" if is_oil else "#2196F3",
-    log_x=log_x_prod,
-    log_y=log_y_prod,
-)
-st.plotly_chart(fig_prod2, use_container_width=True)
-
-# ── KPIs for selection ─────────────────────────────────────────────────────────
-if not df_hl_prod.empty:
-    st.markdown(f"##### 📊 Estadísticas — {hl_label_prod} ({len(df_hl_prod)} pozos)")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(f"P50 {peak_label}",  f"{df_hl_prod[peak_col].median():,.0f}")
-    c2.metric(f"P50 {cum_label}",   f"{df_hl_prod[cum_col].median():,.0f}")
-    c3.metric(f"P50 {water_label}", f"{df_hl_prod[water_col].median():,.0f}")
-    c4.metric("N° Pozos", len(df_hl_prod))
-
-    # Percentile position vs universe
-    def pct_rank(val, series):
-        clean = series.dropna()
-        if clean.empty or pd.isna(val):
-            return np.nan
-        return (clean < val).mean() * 100
-
-    p50_x_hl  = df_hl_prod[cum_col].median()
-    p50_y_hl  = df_hl_prod[peak_col].median()
-    rank_x     = pct_rank(p50_x_hl, summary_fluid[cum_col])
-    rank_y     = pct_rank(p50_y_hl, summary_fluid[peak_col])
-
-    st.caption(
-        f"La selección se ubica en el **percentil {rank_x:.0f}** en {cum_label} "
-        f"y en el **percentil {rank_y:.0f}** en {peak_label} respecto al universo {fluid_prod}."
-    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 2 — BENCHMARK DE COMPLETACIÓN
@@ -426,174 +480,166 @@ st.markdown("---")
 st.subheader("🔩 Benchmark de Completación", divider="blue")
 
 st.markdown("""
-Compará la completación de cualquier pozo, empresa o área vs el universo de pozos con datos de fractura.  
-Elegí qué variable graficar en cada eje.
+Compará la completación de cualquier pozo, empresa o área vs el universo con datos de fractura.  
+Las **acumuladas de producción** disponibles en los ejes usan la misma lógica de TEF acumulado
+que el Benchmark de Producción.
 """)
 
-# ── Axis variable selector ────────────────────────────────────────────────────
-COMPLETION_VARS = {
-    "Longitud Rama (m)":              "longitud_rama_horizontal_m",
-    "Cantidad de Etapas":             "cantidad_fracturas",
-    "Arena Total (tn)":               "arena_total_tn",
-    "Arena Nacional (tn)":            "arena_bombeada_nacional_tn",
-    "Arena Importada (tn)":           "arena_bombeada_importada_tn",
-    "Agua Inyectada (m³)":            "agua_inyectada_m3",
-    "Fracspacing (m)":                "fracspacing",
-    "Propante x Etapa (tn/etapa)":    "prop_x_etapa",
-    "Intensidad Propante (tn/m)":     "proppant_intensity",
-    "AS x Vol. Inyectado (tn/1000m³)":"AS_x_vol",
-    "Qo Pico (m³/d)":                 "Qo_peak",
-    "Qg Pico (km³/d)":                "Qg_peak",
-    "Qo Pico x Etapa (m³/d/etapa)":  "Qo_peak_x_etapa",
-    "Qg Pico x Etapa (km³/d/etapa)": "Qg_peak_x_etapa",
-    "Np Acumulada (m³)":              "Np",
-    "Gp Acumulada (km³)":             "Gp",
-    "Wp Acumulada (m³)":              "Wp",
+# Build per-well peak rates + metadata
+peaks_all = (
+    data_filtered.groupby("sigla")
+    .agg(
+        Qo_peak       =("oil_rate",       "max"),
+        Qg_peak       =("gas_rate",       "max"),
+        empresaNEW    =("empresaNEW",     "first"),
+        areayacimiento=("areayacimiento", "first"),
+        tipopozoNEW   =("tipopozoNEW",    "first"),
+    )
+    .reset_index()
+)
+
+# Merge frac + peaks
+df_comp_base = df_frac.merge(peaks_all, on="sigla", how="inner").drop_duplicates(subset="sigla")
+
+# Attach cumulative volumes for each interval
+for lbl, days in INTERVALS.items():
+    c_int = cumulative_at_interval(data_filtered, days)[
+        ["sigla", "oil_cum", "gas_cum", "water_cum"]
+    ].rename(columns={
+        "oil_cum":   f"oil_{lbl}",
+        "gas_cum":   f"gas_{lbl}",
+        "water_cum": f"wtr_{lbl}",
+    })
+    df_comp_base = df_comp_base.merge(c_int, on="sigla", how="left")
+
+# Derived completion metrics
+df_comp_base["fracspacing"]       = df_comp_base["longitud_rama_horizontal_m"] / df_comp_base["cantidad_fracturas"]
+df_comp_base["prop_x_etapa"]      = df_comp_base["arena_total_tn"] / df_comp_base["cantidad_fracturas"]
+df_comp_base["proppant_intensity"] = df_comp_base["arena_total_tn"] / df_comp_base["longitud_rama_horizontal_m"]
+df_comp_base["AS_x_vol"]          = df_comp_base["arena_total_tn"] / (df_comp_base["agua_inyectada_m3"].replace(0, np.nan) / 1000)
+df_comp_base["Qo_peak_x_etapa"]   = df_comp_base["Qo_peak"] / df_comp_base["cantidad_fracturas"]
+df_comp_base["Qg_peak_x_etapa"]   = df_comp_base["Qg_peak"] / df_comp_base["cantidad_fracturas"]
+df_comp_base = df_comp_base.replace([np.inf, -np.inf], np.nan)
+
+# ── Variable catalog ──────────────────────────────────────────────────────────
+COMP_VARS: dict = {
+    "Longitud Rama (m)":               "longitud_rama_horizontal_m",
+    "Cantidad de Etapas":              "cantidad_fracturas",
+    "Arena Total (tn)":                "arena_total_tn",
+    "Arena Nacional (tn)":             "arena_bombeada_nacional_tn",
+    "Arena Importada (tn)":            "arena_bombeada_importada_tn",
+    "Agua Inyectada (m³)":             "agua_inyectada_m3",
+    "Fracspacing (m)":                 "fracspacing",
+    "Propante x Etapa (tn/etapa)":     "prop_x_etapa",
+    "Intensidad Propante (tn/m)":      "proppant_intensity",
+    "AS x Vol. Inyectado (tn/1000m³)": "AS_x_vol",
+    "Qo Pico (m³/d)":                  "Qo_peak",
+    "Qg Pico (km³/d)":                 "Qg_peak",
+    "Qo Pico x Etapa (m³/d/etapa)":   "Qo_peak_x_etapa",
+    "Qg Pico x Etapa (km³/d/etapa)":  "Qg_peak_x_etapa",
 }
+for lbl in INTERVALS.keys():
+    COMP_VARS[f"Np @ {lbl} (m³)"]  = f"oil_{lbl}"
+    COMP_VARS[f"Gp @ {lbl} (km³)"] = f"gas_{lbl}"
+    COMP_VARS[f"Wp @ {lbl} (m³)"]  = f"wtr_{lbl}"
 
-col_ax1, col_ax2 = st.columns(2)
-x_var_label = col_ax1.selectbox(
-    "Variable eje X:",
-    list(COMPLETION_VARS.keys()),
-    index=0,
-    key="x_var_comp",
-)
-y_var_label = col_ax2.selectbox(
-    "Variable eje Y:",
-    list(COMPLETION_VARS.keys()),
-    index=6,
-    key="y_var_comp",
-)
+# ── Axis + fluid selectors ────────────────────────────────────────────────────
+ca1, ca2 = st.columns(2)
+xvl = ca1.selectbox("Variable eje X:", list(COMP_VARS.keys()), index=0,  key="xvc")
+yvl = ca2.selectbox("Variable eje Y:", list(COMP_VARS.keys()), index=6, key="yvc")
+xv  = COMP_VARS[xvl]
+yv  = COMP_VARS[yvl]
 
-x_var = COMPLETION_VARS[x_var_label]
-y_var = COMPLETION_VARS[y_var_label]
+fluid_c = st.radio("Tipo de Fluido:", ["Todos", "Petrolífero", "Gasífero"],
+                    horizontal=True, key="fluid_c")
+df_c = df_comp_base.copy()
+if fluid_c != "Todos":
+    df_c = df_c[df_c["tipopozoNEW"] == fluid_c]
+df_c = df_c.dropna(subset=[xv, yv])
 
-# Fluid filter for completion
-fluid_comp = st.radio(
-    "Filtrar por Tipo de Fluido (opcional):",
-    ["Todos", "Petrolífero", "Gasífero"],
-    horizontal=True,
-    key="fluid_comp",
-)
-
-df_comp_base = df_merged.copy()
-if fluid_comp != "Todos":
-    df_comp_base = df_comp_base[df_comp_base["tipopozoNEW"] == fluid_comp]
-
-df_comp_base = df_comp_base.dropna(subset=[x_var, y_var])
-
-if df_comp_base.empty:
+if df_c.empty:
     st.warning("No hay datos con ambas variables seleccionadas. Probá otra combinación.")
     st.stop()
 
-# ── Highlight filter ──────────────────────────────────────────────────────────
+# ── Cascaded filter ───────────────────────────────────────────────────────────
 st.markdown("#### 🎯 Filtro de Resaltado")
-col_fc1, col_fc2, col_fc3 = st.columns(3)
+hl_mask_c, hl_label_c = cascaded_filter(df_c, "comp")
+df_hl_c = df_c[hl_mask_c]
 
-with col_fc1:
-    areas_comp = ["(Ninguna)"] + sorted(
-        data_filtered["areayacimiento"].dropna().unique()
-    )
-    selected_area_comp = st.selectbox("Área de Yacimiento:", areas_comp, key="area_comp")
+cl1, cl2 = st.columns(2)
+log_xc = cl1.checkbox("Log eje X", key="lxc")
+log_yc = cl2.checkbox("Log eje Y", key="lyc")
 
-with col_fc2:
-    companies_comp = ["(Ninguna)"] + sorted(
-        df_comp_base["empresaNEW"].dropna().unique()
-    )
-    selected_company_comp = st.selectbox("Empresa:", companies_comp, key="company_comp")
-
-with col_fc3:
-    siglas_comp = ["(Ninguna)"] + sorted(df_comp_base["sigla"].dropna().unique())
-    selected_sigla_comp = st.selectbox("Sigla (pozo):", siglas_comp, key="sigla_comp")
-
-col_log3, col_log4 = st.columns(2)
-log_x_comp = col_log3.checkbox("Escala log eje X", key="logx_comp")
-log_y_comp = col_log4.checkbox("Escala log eje Y", key="logy_comp")
-
-hl_mask_comp = build_highlight_mask(
-    df_comp_base,
-    selected_area_comp,
-    selected_company_comp,
-    selected_sigla_comp,
-    area_to_siglas,
-)
-df_hl_comp = df_comp_base[hl_mask_comp]
-
-hl_label_comp = (
-    selected_sigla_comp   if selected_sigla_comp   != "(Ninguna)" else
-    selected_company_comp if selected_company_comp != "(Ninguna)" else
-    selected_area_comp    if selected_area_comp    != "(Ninguna)" else
-    "Selección"
-)
-
-# ── Chart 2: Completion quadrant ──────────────────────────────────────────────
-fig_comp = build_quadrant_chart(
-    df_all=df_comp_base,
-    df_highlight=df_hl_comp,
-    x_col=x_var,
-    y_col=y_var,
-    x_label=x_var_label,
-    y_label=y_var_label,
-    title=f"Benchmark de Completación — {x_var_label} vs {y_var_label}",
-    highlight_label=hl_label_comp,
+# ── Chart 2 ───────────────────────────────────────────────────────────────────
+fig2 = build_quadrant_chart(
+    df_all=df_c, df_highlight=df_hl_c,
+    x_col=xv, y_col=yv,
+    x_label=xvl, y_label=yvl,
+    title=f"Benchmark Completación — {xvl} vs {yvl}",
+    highlight_label=hl_label_c,
     highlight_color="#FF6B35",
-    log_x=log_x_comp,
-    log_y=log_y_comp,
+    log_x=log_xc, log_y=log_yc,
 )
-st.plotly_chart(fig_comp, use_container_width=True)
+st.plotly_chart(fig2, use_container_width=True)
 
-# ── Stats for completion selection ─────────────────────────────────────────────
-if not df_hl_comp.empty:
-    st.markdown(f"##### 📊 Estadísticas — {hl_label_comp} ({len(df_hl_comp)} pozos)")
+if not df_hl_c.empty:
     c1, c2, c3 = st.columns(3)
-    c1.metric(f"P50 {x_var_label}", f"{df_hl_comp[x_var].median():,.1f}")
-    c2.metric(f"P50 {y_var_label}", f"{df_hl_comp[y_var].median():,.1f}")
-    c3.metric("N° Pozos",           len(df_hl_comp))
+    c1.metric(xvl,        f"{df_hl_c[xv].median():,.1f}")
+    c2.metric(yvl,        f"{df_hl_c[yv].median():,.1f}")
+    c3.metric("N° Pozos", len(df_hl_c))
+    rx = (df_c[xv].dropna() < df_hl_c[xv].median()).mean() * 100
+    ry = (df_c[yv].dropna() < df_hl_c[yv].median()).mean() * 100
+    st.caption(f"Percentil **{rx:.0f}** en {xvl} · percentil **{ry:.0f}** en {yvl} vs universo de completación.")
 
-    rank_x = (df_comp_base[x_var].dropna() < df_hl_comp[x_var].median()).mean() * 100
-    rank_y = (df_comp_base[y_var].dropna() < df_hl_comp[y_var].median()).mean() * 100
-
-    st.caption(
-        f"La selección se ubica en el **percentil {rank_x:.0f}** en {x_var_label} "
-        f"y en el **percentil {rank_y:.0f}** en {y_var_label} respecto al universo de completación."
-    )
-
-    # Additional breakdown table for multi-well selections
-    if len(df_hl_comp) > 1:
-        with st.expander("Ver detalle de pozos de la selección"):
-            display_cols = ["sigla", "empresaNEW", x_var, y_var]
-            rename = {"sigla": "Pozo", "empresaNEW": "Empresa",
-                      x_var: x_var_label, y_var: y_var_label}
+    if len(df_hl_c) > 1:
+        with st.expander("Ver detalle de pozos seleccionados"):
+            dcols = [c for c in ["sigla", "empresaNEW", "areayacimiento", xv, yv] if c in df_hl_c.columns]
+            ren   = {"sigla": "Pozo", "empresaNEW": "Empresa",
+                     "areayacimiento": "Área", xv: xvl, yv: yvl}
             st.dataframe(
-                df_hl_comp[display_cols].rename(columns=rename)
-                .sort_values(y_var_label, ascending=False)
-                .reset_index(drop=True),
-                use_container_width=True,
-                hide_index=True,
+                df_hl_c[dcols].rename(columns=ren)
+                .sort_values(yvl, ascending=False).reset_index(drop=True),
+                use_container_width=True, hide_index=True,
             )
 
-# ── Legend / methodology note ─────────────────────────────────────────────────
+with st.expander("⭐ Líderes del cuadrante Alto-Alto (Completación)", expanded=False):
+    render_leaders(df_c, xv, yv, xvl, yvl, fluid_c, "comp1")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# METHODOLOGY
+# ══════════════════════════════════════════════════════════════════════════════
+
 st.markdown("---")
 with st.expander("ℹ️ Metodología y lectura de los gráficos"):
     st.markdown("""
-    **Cuadrantes y percentiles**
-    - Los percentiles se calculan sobre el **universo completo** de pozos del tipo de fluido seleccionado.
-    - Se usa la **convención de producción de hidrocarburos**:
-      - **P10** = pozo optimista (valor alto, percentil 90 estadístico).
-      - **P50** = mediana del universo.
-      - **P90** = pozo conservador (valor bajo, percentil 10 estadístico).
-    - Las líneas **sólidas** representan P50 (cruce de cuadrantes principal).
-    - Las líneas **punteadas** delimitan las zonas P10 y P90.
+    **Acumuladas de producción**
+    - Replica la hoja **Watchlist**: suma de `prod_pet`, `prod_gas`, `prod_agua` y `tef` por pozo.
+    - Solo ingresan al universo los pozos con **TEF acumulado ≥ intervalo elegido**.
+    - Disponible en 3 horizontes: 180 días, 1 año (365d) y 5 años (1825d).
 
-    **Lectura del cuadrante superior derecho (⭐ Alto-Alto)**
-    - Pozos con alta producción acumulada Y alto caudal pico → mejores performers.
+    **Cuadrantes y percentiles (convención hidrocarburos)**
+    | Percentil | Valor estadístico | Interpretación |
+    |-----------|-------------------|----------------|
+    | **P10**   | Q90 estadístico   | Pozo optimista (valor alto) |
+    | **P50**   | Mediana           | Referencia del universo |
+    | **P90**   | Q10 estadístico   | Pozo conservador (valor bajo) |
+
+    - Líneas **sólidas** = P50 (cruce de cuadrantes).
+    - Líneas **guionadas** = P10. Líneas **punteadas** = P90.
+
+    **Filtro en cascada (Empresa → Área → Sigla)**
+    - Al elegir empresa, las áreas disponibles se filtran automáticamente.
+    - Al elegir área, las siglas se filtran también.
+    - Prioridad de resaltado: Sigla > Área > Empresa.
+
+    **Heatmap de consistencia Alto-Alto**
+    - % de pozos de cada combinación Empresa × Área en el cuadrante Alto-Alto.
+    - Sólo combinaciones con ≥ 2 pozos en el universo.
+    - Verde intenso = el desempeño superior es **estructural**, no un outlier.
 
     **Benchmark de Completación**
-    - Se cruzan datos del dataset de fractura con el resumen de producción por sigla.
-    - Solo se grafican pozos con **datos válidos en ambos ejes** seleccionados.
-    - Se aplican los mismos filtros de calidad de datos que en el resto del reporte
-      (longitud rama > 100 m, etapas > 6, arena total > 100 tn).
-
-    **Prioridad del filtro de resaltado**  
-    Sigla > Empresa > Área (solo se aplica el primer filtro activo distinto de "(Ninguna)").
+    - Filtros de calidad aplicados (mismos que el resto del reporte):
+      longitud rama > 100 m · etapas > 6 · arena total > 100 tn.
+    - Las acumuladas disponibles en los ejes siguen el mismo criterio de TEF.
     """)
