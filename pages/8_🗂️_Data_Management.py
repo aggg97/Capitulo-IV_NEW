@@ -12,6 +12,13 @@ from utils import (
 )
 
 
+# ── Conversion factor ──────────────────────────────────────────────────────────
+# prod_pet  → m³ de petróleo  (factor 1)
+# prod_gas  → km³ de gas  →  × 1000 m³/km³ × 0.0009 m³oe/m³gas  =  × 0.9 m³oe / km³gas
+# Equivalencia energética estándar argentina: 1 Gm³ gas = 1 MM m³oe
+GAS_TO_M3OE = 0.9   # m³oe por km³ de gas
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 
 if "df" in st.session_state:
@@ -31,41 +38,43 @@ else:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
-st.header(f":blue[Reporte Extensivo de Completación y Producción en Vaca Muerta]")
-image = Image.open("Vaca Muerta rig.png")
-st.sidebar.image(image)
-
+st.header(":blue[Reporte Extensivo de Completación y Producción en Vaca Muerta]")
+st.sidebar.image(Image.open("Vaca Muerta rig.png"))
 st.sidebar.caption("")
 st.sidebar.caption(
     "Nota: Para excluir los pozos clasificados como 'Otro tipo', "
     "se crea una nueva columna que utiliza la definición de fluido basada "
     "en el criterio de GOR según McCain. Esto permite reclasificar estos pozos como "
-    "'Gasíferos' o 'Petrolíferos' de manera más precisa"
+    "'Gasíferos' o 'Petrolíferos' de manera más precisa."
 )
-image_mccain = Image.open("McCain.png")
-st.sidebar.image(image_mccain)
+st.sidebar.image(Image.open("McCain.png"))
 
 
 # ── Data preparation ──────────────────────────────────────────────────────────
 
 data_filtered = data_sorted[data_sorted["tef"] > 0]
 
-# Load fracture data via shared utility (cached)
-df_frac = load_frac_data()
-
-# Per-well summary via shared utility (requires tipopozoNEW — already added above)
+df_frac    = load_frac_data()
 summary_df = create_summary_dataframe(data_filtered)
 
-# Merge frac + summary
 df_merged = (
     pd.merge(df_frac, summary_df, on="sigla", how="outer")
     .drop_duplicates()
 )
 
 
-# ── Derived columns used throughout the page ──────────────────────────────────
+# ── Derived columns ───────────────────────────────────────────────────────────
+# Producción total en m³oe:
+#   - Petróleo: Np  [m³]  × 1
+#   - Gas:      Gp  [km³] × GAS_TO_M3OE  (0.9 m³oe / km³)
+# Esto permite comparar y agregar producción de pozos de distinto fluido
+# sin mezclar unidades ni magnitudes incompatibles.
 
-df_merged["prod_total"]     = df_merged["Np"].fillna(0) + df_merged["Gp"].fillna(0)
+df_merged["prod_total_m3oe"] = (
+    df_merged["Np"].fillna(0) +
+    df_merged["Gp"].fillna(0) * GAS_TO_M3OE
+)
+
 df_merged["sin_datos_frac"] = df_merged["id_base_fractura_adjiv"].isna()
 df_merged["anio_inicio"]    = pd.to_datetime(df_merged["date"]).dt.year
 
@@ -74,36 +83,44 @@ df_merged["score_calidad"] = (
     df_merged[campos_criticos].notna().sum(axis=1) / len(campos_criticos) * 100
 ).round(1)
 
+# Deduplicated frame — one row per well, used for all well-level aggregations
+_dm_base = df_merged.drop_duplicates("sigla").copy()
+
 
 # ── Global KPIs ───────────────────────────────────────────────────────────────
 
 st.subheader("Diagnóstico de Calidad de Datos por Empresa", divider="blue")
 
-st.info("""
-Esta sección muestra dónde faltan datos de fractura en los pozos más relevantes 
-de Vaca Muerta.
+st.info(
+    "Esta sección muestra dónde faltan datos de fractura en los pozos más relevantes "
+    "de Vaca Muerta. La producción se expresa en **m³oe** (metros cúbicos equivalentes "
+    "de petróleo) para comparar pozos gasíferos y petrolíferos en una métrica "
+    "energéticamente consistente."
+)
 
-El foco está en producción, no en cantidad de pozos, para evidenciar qué empresas 
-tienen información crítica incompleta que puede afectar análisis y rankings.
-""")
-
-_df_dedup        = df_merged.drop_duplicates("sigla")
-total_pozos_g    = _df_dedup["sigla"].nunique()
-pozos_sin_frac_g = int(_df_dedup["sin_datos_frac"].sum())
-prod_total_g     = df_merged["prod_total"].sum()
-prod_sin_frac_g  = df_merged[df_merged["sin_datos_frac"]]["prod_total"].sum()
+total_pozos_g    = _dm_base["sigla"].nunique()
+pozos_sin_frac_g = int(_dm_base["sin_datos_frac"].sum())
+prod_total_g     = _dm_base["prod_total_m3oe"].sum()
+prod_sin_frac_g  = _dm_base[_dm_base["sin_datos_frac"]]["prod_total_m3oe"].sum()
 pct_prod_g       = prod_sin_frac_g / prod_total_g * 100 if prod_total_g else 0
-score_medio_g    = _df_dedup["score_calidad"].mean()
+score_medio_g    = _dm_base["score_calidad"].mean()
 
 st.subheader("Resumen Global", divider="grey")
 _c1, _c2, _c3, _c4, _c5 = st.columns(5)
-_c1.metric("Total Pozos",         f"{total_pozos_g:,}")
-_c2.metric("Sin Datos Fractura",  f"{pozos_sin_frac_g:,}",
-           delta=f"-{pozos_sin_frac_g/total_pozos_g*100:.1f}% del total", delta_color="inverse")
-_c3.metric("Producción Total",    f"{prod_total_g:,.0f}")
-_c4.metric("Prod. sin Fractura",  f"{prod_sin_frac_g:,.0f}",
+_c1.metric("Total Pozos",               f"{total_pozos_g:,}")
+_c2.metric("Sin Datos Fractura",        f"{pozos_sin_frac_g:,}",
+           delta=f"-{pozos_sin_frac_g / total_pozos_g * 100:.1f}% del total",
+           delta_color="inverse")
+_c3.metric("Producción Total (m³oe)",   f"{prod_total_g:,.0f}")
+_c4.metric("Prod. sin Fractura (m³oe)", f"{prod_sin_frac_g:,.0f}",
            delta=f"-{pct_prod_g:.1f}% del total", delta_color="inverse")
-_c5.metric("Score Calidad Medio", f"{score_medio_g:.1f} / 100")
+_c5.metric("Score Calidad Medio",       f"{score_medio_g:.1f} / 100")
+
+st.caption(
+    "**m³oe** = metros cúbicos equivalentes de petróleo. "
+    "Factor aplicado: 1 km³ gas = 0.9 m³oe  "
+    "(equivalencia energética estándar: 1 Gm³ gas ≡ 1 MM m³oe)."
+)
 
 st.divider()
 
@@ -113,19 +130,26 @@ st.divider()
 st.subheader("Ranking Data Management: Impacto por Producción sin Datos de Fractura")
 
 _sin_frac_stats = (
-    df_merged[df_merged["sin_datos_frac"]]
+    _dm_base[_dm_base["sin_datos_frac"]]
     .groupby("empresaNEW")
-    .agg(prod_sin_frac=("prod_total", "sum"), pozos_sin_frac=("sigla", "nunique"))
+    .agg(
+        prod_sin_frac  =("prod_total_m3oe", "sum"),
+        pozos_sin_frac =("sigla",           "nunique"),
+    )
     .reset_index()
 )
 ranking_dm = (
-    df_merged.groupby("empresaNEW")
-    .agg(prod_total=("prod_total", "sum"), pozos_total=("sigla", "nunique"))
+    _dm_base.groupby("empresaNEW")
+    .agg(prod_total=("prod_total_m3oe", "sum"), pozos_total=("sigla", "nunique"))
     .reset_index()
     .merge(_sin_frac_stats, on="empresaNEW", how="left")
 )
-ranking_dm[["prod_sin_frac", "pozos_sin_frac"]] = ranking_dm[["prod_sin_frac", "pozos_sin_frac"]].fillna(0)
-ranking_dm["pct_incompleto"] = (ranking_dm["prod_sin_frac"] / ranking_dm["prod_total"]) * 100
+ranking_dm[["prod_sin_frac", "pozos_sin_frac"]] = (
+    ranking_dm[["prod_sin_frac", "pozos_sin_frac"]].fillna(0)
+)
+ranking_dm["pct_incompleto"] = (
+    ranking_dm["prod_sin_frac"] / ranking_dm["prod_total"] * 100
+)
 ranking_dm = ranking_dm.sort_values("prod_sin_frac", ascending=False)
 
 ranking_dm["prod_total_fmt"]     = ranking_dm["prod_total"].map("{:,.0f}".format)
@@ -134,11 +158,13 @@ ranking_dm["pct_incompleto_fmt"] = ranking_dm["pct_incompleto"].map("{:.1f}%".fo
 ranking_dm["pozos_sin_frac_fmt"] = ranking_dm["pozos_sin_frac"].astype(int).map("{:,}".format)
 
 st.dataframe(
-    ranking_dm[["empresaNEW", "prod_total_fmt", "prod_sin_frac_fmt",
-                "pct_incompleto_fmt", "pozos_sin_frac_fmt"]].rename(columns={
+    ranking_dm[[
+        "empresaNEW", "prod_total_fmt", "prod_sin_frac_fmt",
+        "pct_incompleto_fmt", "pozos_sin_frac_fmt",
+    ]].rename(columns={
         "empresaNEW":          "Empresa",
-        "prod_total_fmt":      "Prod. Total",
-        "prod_sin_frac_fmt":   "Prod. sin Fractura",
+        "prod_total_fmt":      "Prod. Total (m³oe)",
+        "prod_sin_frac_fmt":   "Prod. sin Fractura (m³oe)",
         "pct_incompleto_fmt":  "% Incompleto",
         "pozos_sin_frac_fmt":  "Pozos sin Fractura",
     }),
@@ -165,11 +191,11 @@ fig_dm = px.scatter(
         "pozos_sin_frac": True,
     },
     text="empresaNEW",
-    title="Mapa de Riesgo: Producción Total vs % Datos Incompletos",
+    title="Mapa de Riesgo: Producción Total (m³oe) vs % Datos Incompletos",
     labels={
         "pct_incompleto": "% Producción sin datos de fractura",
-        "prod_total":     "Producción Total",
-        "prod_sin_frac":  "Prod. sin datos de fractura",
+        "prod_total":     "Producción Total (m³oe)",
+        "prod_sin_frac":  "Prod. sin datos (m³oe)",
     },
 )
 fig_dm.update_traces(
@@ -180,14 +206,14 @@ fig_dm.update_traces(
 fig_dm.update_layout(
     template="plotly_white",
     xaxis_title="% Producción sin datos de fractura",
-    yaxis_title="Producción Total",
+    yaxis_title="Producción Total (m³oe)",
     yaxis_tickformat=",",
     coloraxis_colorbar=dict(title="% Incompleto", ticksuffix="%"),
 )
 fig_dm.add_vline(x=50, line_dash="dash", line_color="orange",
                  annotation_text="50% umbral", annotation_position="top right")
 fig_dm.add_vline(x=80, line_dash="dash", line_color="red",
-                 annotation_text="80% crítico", annotation_position="top right")
+                 annotation_text="80% crítico",  annotation_position="top right")
 st.plotly_chart(fig_dm, use_container_width=True)
 
 
@@ -278,25 +304,24 @@ empresa_objetivo = st.selectbox(
     sorted(df_merged["empresaNEW"].dropna().unique()),
 )
 
-df_emp = df_merged.drop_duplicates("sigla").copy()
-df_emp = df_emp[df_emp["empresaNEW"] == empresa_objetivo]
+df_emp = _dm_base[_dm_base["empresaNEW"] == empresa_objetivo].copy()
 
 total_pozos    = df_emp["sigla"].nunique()
-pozos_sin_frac = df_emp["sin_datos_frac"].sum()
-pct            = (pozos_sin_frac / total_pozos) * 100 if total_pozos > 0 else 0
-prod_emp       = df_emp["prod_total"].sum()
-prod_sin_emp   = df_emp[df_emp["sin_datos_frac"]]["prod_total"].sum()
+pozos_sin_frac = int(df_emp["sin_datos_frac"].sum())
+pct            = (pozos_sin_frac / total_pozos * 100) if total_pozos > 0 else 0
+prod_emp       = df_emp["prod_total_m3oe"].sum()
+prod_sin_emp   = df_emp[df_emp["sin_datos_frac"]]["prod_total_m3oe"].sum()
 pct_prod_emp   = (prod_sin_emp / prod_emp * 100) if prod_emp > 0 else 0
 score_emp      = df_emp["score_calidad"].mean()
 
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Total Pozos",        total_pozos)
-col2.metric("Sin Datos Fractura", int(pozos_sin_frac),
+col1.metric("Total Pozos",               total_pozos)
+col2.metric("Sin Datos Fractura",        pozos_sin_frac,
             delta=f"-{pct:.1f}%", delta_color="inverse")
-col3.metric("% Incompleto",       f"{pct:.1f}%")
-col4.metric("Prod. sin Fractura", f"{prod_sin_emp:,.0f}",
+col3.metric("% Incompleto",              f"{pct:.1f}%")
+col4.metric("Prod. sin Fractura (m³oe)", f"{prod_sin_emp:,.0f}",
             delta=f"-{pct_prod_emp:.1f}% del total", delta_color="inverse")
-col5.metric("Score Calidad",      f"{score_emp:.1f} / 100")
+col5.metric("Score Calidad",             f"{score_emp:.1f} / 100")
 
 # Breakdown by well type
 resumen_tipo = (
