@@ -202,3 +202,43 @@ fig_oil_year.update_layout(
     legend=dict(orientation="h", yanchor="top", y=-0.3, xanchor="center", x=0.5, font=dict(size=10))
 )
 st.plotly_chart(fig_oil_year)
+
+# Draft - testing mode
+
+# ── GRÁFICO YoY ────────────────────────────────────────────────────────
+# Agregar totales mensuales
+monthly_totals = (
+    data_filtered
+    .groupby('date')
+    .agg(oil_rate=('oil_rate', 'sum'), gas_rate=('gas_rate', 'sum'))
+    .reset_index()
+    .sort_values('date')
+)
+monthly_totals['oil_rate_km3'] = monthly_totals['oil_rate'] / 1000
+monthly_totals['gas_rate_mm3'] = monthly_totals['gas_rate'] / 1000
+monthly_totals['anio']         = monthly_totals['date'].dt.year
+monthly_totals['mes']          = monthly_totals['date'].dt.month
+
+# Merge con año anterior
+yoy = monthly_totals.merge(
+    monthly_totals[['anio', 'mes', 'oil_rate_km3', 'gas_rate_mm3']],
+    left_on=['anio', 'mes'],
+    right_on=[monthly_totals['anio'] + 1, monthly_totals['mes']],
+    suffixes=('', '_prev')
+)
+yoy['oil_yoy_pct'] = (yoy['oil_rate_km3'] - yoy['oil_rate_km3_prev']) / yoy['oil_rate_km3_prev'] * 100
+yoy['gas_yoy_pct'] = (yoy['gas_rate_mm3'] - yoy['gas_rate_mm3_prev']) / yoy['gas_rate_mm3_prev'] * 100
+
+fig_yoy = go.Figure()
+fig_yoy.add_bar(
+    x=yoy['date'], y=yoy['oil_yoy_pct'],
+    name='Petróleo YoY %',
+    marker_color=yoy['oil_yoy_pct'].apply(lambda v: '#27ae60' if v >= 0 else '#e74c3c')
+)
+fig_yoy.update_layout(
+    title="Variación Interanual de Petróleo (%)",
+    xaxis_title="Fecha",
+    yaxis_title="Variación YoY (%)",
+    hovermode="x unified"
+)
+st.plotly_chart(fig_yoy)
