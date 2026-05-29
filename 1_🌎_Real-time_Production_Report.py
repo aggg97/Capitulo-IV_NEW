@@ -91,11 +91,6 @@ st.caption(
     "finalizados, completos y representativos."
 )
 
-col1, col2, col3 = st.columns(3)
-col1.metric(label=":red[Total Caudal de Gas (MMm³/d)]",       value=total_gas_rate_rounded)
-col2.metric(label=":green[Total Caudal de Petróleo (km³/d)]", value=total_oil_rate_rounded)
-col3.metric(label=":green[Total Caudal de Petróleo (kbpd)]",  value=oil_rate_bpd_rounded)
-
 
 # ── Company aggregation ───────────────────────────────────────────────────────
 
@@ -272,6 +267,35 @@ col7.metric(
     value=oil_per_well
 )
 fig_yoy = go.Figure()
+
+# ── Construcción del DataFrame YoY ────────────────────────────────────
+monthly_totals = (
+    data_filtered
+    .groupby('date')
+    .agg(oil_rate=('oil_rate', 'sum'), gas_rate=('gas_rate', 'sum'))
+    .reset_index()
+    .sort_values('date')
+)
+monthly_totals['oil_rate_km3'] = monthly_totals['oil_rate'] / 1000
+monthly_totals['gas_rate_mm3'] = monthly_totals['gas_rate'] / 1000
+monthly_totals['anio']         = monthly_totals['date'].dt.year
+monthly_totals['mes']          = monthly_totals['date'].dt.month
+
+# Merge con el mismo mes del año anterior
+yoy = monthly_totals.merge(
+    monthly_totals[['anio', 'mes', 'oil_rate_km3', 'gas_rate_mm3']].rename(
+        columns={'oil_rate_km3': 'oil_rate_km3_prev', 'gas_rate_mm3': 'gas_rate_mm3_prev', 'anio': 'anio_prev'}
+    ),
+    left_on=['anio', 'mes'],
+    right_on=['anio_prev', 'mes'],
+    how='inner'
+)
+
+# Filtrar solo filas donde el año actual = año anterior + 1
+yoy = yoy[yoy['anio'] == yoy['anio_prev'] + 1].copy()
+
+yoy['oil_yoy_pct'] = (yoy['oil_rate_km3'] - yoy['oil_rate_km3_prev']) / yoy['oil_rate_km3_prev'] * 100
+yoy['gas_yoy_pct'] = (yoy['gas_rate_mm3'] - yoy['gas_rate_mm3_prev']) / yoy['gas_rate_mm3_prev'] * 100
 
 # ── Traza petróleo ─────────────────────────────────────────────────────
 fig_yoy.add_trace(go.Bar(
