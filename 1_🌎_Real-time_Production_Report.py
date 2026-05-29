@@ -205,6 +205,73 @@ st.plotly_chart(fig_oil_year)
 
 # Draft - testing mode
 
+from dateutil.relativedelta import relativedelta
+
+# ── VARIACIÓN INTERANUAL ───────────────────────────────────────────────
+# Fecha del mismo mes del año anterior
+previous_year_date = latest_date - relativedelta(years=1)
+previous_year_data = data_filtered[data_filtered['date'] == previous_year_date]
+
+# Caudales del año anterior
+prev_gas_rate  = previous_year_data['gas_rate'].sum() / 1000
+prev_oil_rate  = previous_year_data['oil_rate'].sum() / 1000
+
+# Deltas para el widget metric()
+gas_yoy_delta  = round(total_gas_rate_rounded - round(prev_gas_rate, 1), 1)
+oil_yoy_delta  = round(total_oil_rate_rounded - round(prev_oil_rate, 1), 1)
+bpd_yoy_delta  = round(oil_rate_bpd_rounded - round(prev_oil_rate * 6.28981, 1), 1)
+
+# Actualizar las métricas con deltas
+col1.metric(
+    label=":red[Total Caudal de Gas (MMm³/d)]",
+    value=total_gas_rate_rounded,
+    delta=f"{gas_yoy_delta:+.1f} vs año anterior"
+)
+col2.metric(
+    label=":green[Total Caudal de Petróleo (km³/d)]",
+    value=total_oil_rate_rounded,
+    delta=f"{oil_yoy_delta:+.1f} vs año anterior"
+)
+col3.metric(
+    label=":green[Total Caudal de Petróleo (kbpd)]",
+    value=oil_rate_bpd_rounded,
+    delta=f"{bpd_yoy_delta:+.1f} vs año anterior"
+)
+
+# ── MÉTRICAS OPERATIVAS (segunda fila) ────────────────────────────────
+active_wells  = latest_data['sigla'].nunique()
+water_cut     = round(
+    latest_data['prod_agua'].sum() /
+    (latest_data['prod_pet'].sum() + latest_data['prod_agua'].sum()) * 100, 1
+)
+gor           = round(
+    latest_data['prod_gas'].sum() / latest_data['prod_pet'].sum(), 1
+) if latest_data['prod_pet'].sum() > 0 else 0
+
+oil_per_well  = round(total_oil_rate_rounded * 1000 / active_wells, 1) if active_wells > 0 else 0
+
+# Año anterior para pozos activos
+prev_wells    = previous_year_data['sigla'].nunique()
+wells_delta   = active_wells - prev_wells
+
+col4, col5, col6, col7 = st.columns(4)
+col4.metric(
+    label="🛢️ Pozos Activos",
+    value=active_wells,
+    delta=f"{wells_delta:+d} vs año anterior"
+)
+col5.metric(
+    label="💧 Water Cut (%)",
+    value=water_cut
+)
+col6.metric(
+    label="⚗️ GOR (m³gas/m³oil)",
+    value=gor
+)
+col7.metric(
+    label="📊 Productividad/Pozo (m³/d)",
+    value=oil_per_well
+)
 # ── GRÁFICO YoY ────────────────────────────────────────────────────────
 # Agregar totales mensuales
 monthly_totals = (
