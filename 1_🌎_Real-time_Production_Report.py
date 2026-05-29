@@ -91,6 +91,11 @@ st.caption(
     "finalizados, completos y representativos."
 )
 
+col1, col2, col3 = st.columns(3)
+col1.metric(label=":red[Total Caudal de Gas (MMm³/d)]",       value=total_gas_rate_rounded)
+col2.metric(label=":green[Total Caudal de Petróleo (km³/d)]", value=total_oil_rate_rounded)
+col3.metric(label=":green[Total Caudal de Petróleo (kbpd)]",  value=oil_rate_bpd_rounded)
+
 
 # ── Company aggregation ───────────────────────────────────────────────────────
 
@@ -211,11 +216,27 @@ previous_year_data = data_filtered[data_filtered['date'] == previous_year_date]
 prev_gas_rate  = previous_year_data['gas_rate'].sum() / 1000
 prev_oil_rate  = previous_year_data['oil_rate'].sum() / 1000
 
-# ── Deltas YoY en % ────────────────────────────────────────────────────
-gas_yoy_pct = round((total_gas_rate_rounded - round(prev_gas_rate, 1)) / round(prev_gas_rate, 1) * 100, 1) if prev_gas_rate > 0 else 0
-oil_yoy_pct = round((total_oil_rate_rounded - round(prev_oil_rate, 1)) / round(prev_oil_rate, 1) * 100, 1) if prev_oil_rate > 0 else 0
-bpd_yoy_pct = round((oil_rate_bpd_rounded  - round(prev_oil_rate * 6.28981, 1)) / round(prev_oil_rate * 6.28981, 1) * 100, 1) if prev_oil_rate > 0 else 0
+# Deltas para el widget metric()
+gas_yoy_delta  = round(total_gas_rate_rounded - round(prev_gas_rate, 1), 1)
+oil_yoy_delta  = round(total_oil_rate_rounded - round(prev_oil_rate, 1), 1)
+bpd_yoy_delta  = round(oil_rate_bpd_rounded - round(prev_oil_rate * 6.28981, 1), 1)
 
+# Actualizar las métricas con deltas
+col1.metric(
+    label=":red[Total Caudal de Gas (MMm³/d)]",
+    value=total_gas_rate_rounded,
+    delta=f"{gas_yoy_delta:+.1f} vs año anterior"
+)
+col2.metric(
+    label=":green[Total Caudal de Petróleo (km³/d)]",
+    value=total_oil_rate_rounded,
+    delta=f"{oil_yoy_delta:+.1f} vs año anterior"
+)
+col3.metric(
+    label=":green[Total Caudal de Petróleo (kbpd)]",
+    value=oil_rate_bpd_rounded,
+    delta=f"{bpd_yoy_delta:+.1f} vs año anterior"
+)
 
 # ── MÉTRICAS OPERATIVAS (segunda fila) ────────────────────────────────
 active_wells  = latest_data['sigla'].nunique()
@@ -251,9 +272,8 @@ col7.metric(
     label="📊 Productividad/Pozo (m³/d)",
     value=oil_per_well
 )
-fig_yoy = go.Figure()
-
-# ── Construcción del DataFrame YoY ────────────────────────────────────
+# ── GRÁFICO YoY ────────────────────────────────────────────────────────
+# Agregar totales mensuales
 monthly_totals = (
     data_filtered
     .groupby('date')
@@ -266,66 +286,26 @@ monthly_totals['gas_rate_mm3'] = monthly_totals['gas_rate'] / 1000
 monthly_totals['anio']         = monthly_totals['date'].dt.year
 monthly_totals['mes']          = monthly_totals['date'].dt.month
 
-# Merge con el mismo mes del año anterior
+# Merge con año anterior
 yoy = monthly_totals.merge(
-    monthly_totals[['anio', 'mes', 'oil_rate_km3', 'gas_rate_mm3']].rename(
-        columns={'oil_rate_km3': 'oil_rate_km3_prev', 'gas_rate_mm3': 'gas_rate_mm3_prev', 'anio': 'anio_prev'}
-    ),
+    monthly_totals[['anio', 'mes', 'oil_rate_km3', 'gas_rate_mm3']],
     left_on=['anio', 'mes'],
-    right_on=['anio_prev', 'mes'],
-    how='inner'
+    right_on=[monthly_totals['anio'] + 1, monthly_totals['mes']],
+    suffixes=('', '_prev')
 )
-
-# Filtrar solo filas donde el año actual = año anterior + 1
-yoy = yoy[yoy['anio'] == yoy['anio_prev'] + 1].copy()
-
 yoy['oil_yoy_pct'] = (yoy['oil_rate_km3'] - yoy['oil_rate_km3_prev']) / yoy['oil_rate_km3_prev'] * 100
 yoy['gas_yoy_pct'] = (yoy['gas_rate_mm3'] - yoy['gas_rate_mm3_prev']) / yoy['gas_rate_mm3_prev'] * 100
 
-# ── Traza petróleo ─────────────────────────────────────────────────────
-fig_yoy.add_trace(go.Bar(
-    x=yoy['date'],
-    y=yoy['oil_yoy_pct'],
-    name='Petróleo',
-    marker_color=yoy['oil_yoy_pct'].apply(lambda v: '#27ae60' if v >= 0 else '#e74c3c'),
-    customdata=yoy[['oil_rate_km3', 'oil_rate_km3_prev']].values,
-    hovertemplate=(
-        "🛢️ <b>Petróleo</b><br>"
-        "YoY: <b>%{y:.1f}%</b><br>"
-        "Actual: <b>%{customdata[0]:.1f} km³/d</b><br>"
-        "Año anterior: <b>%{customdata[1]:.1f} km³/d</b>"
-        "<extra></extra>"
-    )
-))
-
-# ── Traza gas ──────────────────────────────────────────────────────────
-fig_yoy.add_trace(go.Bar(
-    x=yoy['date'],
-    y=yoy['gas_yoy_pct'],
-    name='Gas',
-    marker_color=yoy['gas_yoy_pct'].apply(lambda v: '#2980b9' if v >= 0 else '#e67e22'),
-    customdata=yoy[['gas_rate_mm3', 'gas_rate_mm3_prev']].values,
-    hovertemplate=(
-        "🔥 <b>Gas</b><br>"
-        "YoY: <b>%{y:.1f}%</b><br>"
-        "Actual: <b>%{customdata[0]:.1f} MMm³/d</b><br>"
-        "Año anterior: <b>%{customdata[1]:.1f} MMm³/d</b>"
-        "<extra></extra>"
-    )
-))
-
+fig_yoy = go.Figure()
+fig_yoy.add_bar(
+    x=yoy['date'], y=yoy['oil_yoy_pct'],
+    name='Petróleo YoY %',
+    marker_color=yoy['oil_yoy_pct'].apply(lambda v: '#27ae60' if v >= 0 else '#e74c3c')
+)
 fig_yoy.update_layout(
-    title="Variación Interanual — Gas y Petróleo (%)",
+    title="Variación Interanual de Petróleo (%)",
     xaxis_title="Fecha",
     yaxis_title="Variación YoY (%)",
-    barmode='group',        # ← barras lado a lado
-    hovermode="x unified",  # ← un solo tooltip con ambas trazas
-    legend=dict(
-        orientation="h",
-        y=-0.25,
-        x=0.5,
-        xanchor="center"
-    )
+    hovermode="x unified"
 )
-
 st.plotly_chart(fig_yoy)
