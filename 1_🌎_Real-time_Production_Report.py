@@ -216,21 +216,6 @@ gas_yoy_pct = round((total_gas_rate_rounded - round(prev_gas_rate, 1)) / round(p
 oil_yoy_pct = round((total_oil_rate_rounded - round(prev_oil_rate, 1)) / round(prev_oil_rate, 1) * 100, 1) if prev_oil_rate > 0 else 0
 bpd_yoy_pct = round((oil_rate_bpd_rounded  - round(prev_oil_rate * 6.28981, 1)) / round(prev_oil_rate * 6.28981, 1) * 100, 1) if prev_oil_rate > 0 else 0
 
-col1.metric(
-    label=":red[Total Caudal de Gas (MMm³/d)]",
-    value=total_gas_rate_rounded,
-    delta=f"{gas_yoy_pct:+.1f}% vs año anterior"
-)
-col2.metric(
-    label=":green[Total Caudal de Petróleo (km³/d)]",
-    value=total_oil_rate_rounded,
-    delta=f"{oil_yoy_pct:+.1f}% vs año anterior"
-)
-col3.metric(
-    label=":green[Total Caudal de Petróleo (kbpd)]",
-    value=oil_rate_bpd_rounded,
-    delta=f"{bpd_yoy_pct:+.1f}% vs año anterior"
-)
 
 # ── MÉTRICAS OPERATIVAS (segunda fila) ────────────────────────────────
 active_wells  = latest_data['sigla'].nunique()
