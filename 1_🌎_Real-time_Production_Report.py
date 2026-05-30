@@ -372,8 +372,7 @@ fig_roll.update_layout(
     xaxis_title="Fecha",
     yaxis_title=y_lbl,
     hovermode="x unified",
-    template="plotly_white",
-    legend=LEGEND_BOTTOM,
+    template="plotly_white"
 )
 st.plotly_chart(fig_roll, use_container_width=True)
 
