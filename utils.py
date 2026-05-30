@@ -152,11 +152,22 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     df = df.copy()
+
+    # Guard: sigla must be a regular column, not the index
+    if "sigla" not in df.columns:
+        if df.index.name == "sigla":
+            df = df.reset_index()
+        else:
+            raise KeyError(
+                "La columna 'sigla' no está presente en el DataFrame de entrada. "
+                "Verificar que el DataFrame viene de load_and_sort_data() sin modificaciones al índice."
+            )
+
     df["Qo_peak"]    = df.groupby("sigla")["oil_rate"].transform("max")
     df["Qg_peak"]    = df.groupby("sigla")["gas_rate"].transform("max")
     df["start_year"] = df.groupby("sigla")["anio"].transform("min")
 
-    def calculate_eur(group):
+    def calculate_eur(group: pd.DataFrame) -> pd.DataFrame:
         group      = group.sort_values("date")
         start_date = group["date"].iloc[0]
         cum_col    = "Np" if group["tipopozoNEW"].iloc[0] == "Petrolífero" else "Gp"
@@ -165,15 +176,41 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             group[col] = group.loc[group["date"] <= cutoff, cum_col].max()
         return group
 
-    # Fix para pandas 2.x: groupby+apply puede promover 'sigla' al índice
-    # en lugar de mantenerla como columna, rompiendo el groupby posterior.
-    df = df.groupby("sigla", group_keys=False).apply(calculate_eur)
-    if df.index.name == "sigla" or "sigla" not in df.columns:
-        df = df.reset_index()
-    else:
-        df = df.reset_index(drop=True)
+    # ── Pandas 2.x robust groupby+apply ──────────────────────────────────────
+    # groupby+apply in pandas ≥ 2.0 may promote the group key ('sigla') into
+    # the index instead of keeping it as a column, depending on the pandas
+    # minor version and whether include_groups was set.  The block below
+    # normalises the result so 'sigla' is always a plain column afterward.
+    try:
+        # pandas ≥ 2.2: pass include_groups=False to silence FutureWarning,
+        # then restore sigla from the group key via reset_index.
+        result = df.groupby("sigla", group_keys=True).apply(
+            calculate_eur, include_groups=False
+        )
+    except TypeError:
+        # pandas < 2.2: include_groups not supported, fall back silently
+        result = df.groupby("sigla", group_keys=False).apply(calculate_eur)
 
-    # Build agg dict — only include optional columns if present in df
+    # Normalise index → always make sigla a regular column
+    if isinstance(result.index, pd.MultiIndex):
+        # MultiIndex → first level is sigla, second is original row index
+        result = result.reset_index(level=0).reset_index(drop=True)
+    elif result.index.name == "sigla":
+        result = result.reset_index()
+    else:
+        result = result.reset_index(drop=True)
+
+    # If include_groups=False dropped sigla from columns, restore from index op above
+    if "sigla" not in result.columns:
+        raise KeyError(
+            "No se pudo restaurar la columna 'sigla' tras groupby+apply. "
+            f"Columnas disponibles: {list(result.columns)}. "
+            "Verificar versión de pandas con: import pandas; print(pandas.__version__)"
+        )
+
+    df = result
+
+    # ── Aggregation ───────────────────────────────────────────────────────────
     agg = dict(
         date       =("date",       "first"),
         start_year =("start_year", "first"),
