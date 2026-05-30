@@ -425,7 +425,7 @@ fig_var.update_layout(
     yaxis_title="Variación (%)",
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+    
 )
 st.plotly_chart(fig_var, use_container_width=True)
 
@@ -484,7 +484,7 @@ fig_incr.update_layout(
     yaxis_title=_inc_lbl,
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+  
 )
 st.plotly_chart(fig_incr, use_container_width=True)
 
@@ -547,7 +547,7 @@ layout_gw = dict(
     yaxis_title="GOR (m³/km³)" if gorwor_sel != "WOR" else "WOR (m³/m³)",
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+   
 )
 if gorwor_sel == "Ambas":
     layout_gw["yaxis2"] = dict(
@@ -640,7 +640,7 @@ fig_ms.update_layout(
     yaxis_title="Participación (%)",
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+
     yaxis=dict(range=[0, 100], ticksuffix="%"),
 )
 st.plotly_chart(fig_ms, use_container_width=True)
@@ -696,7 +696,7 @@ fig_bf1.update_layout(
     yaxis_title=_bf_lbl,
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+   
 )
 st.plotly_chart(fig_bf1, use_container_width=True)
 
@@ -722,7 +722,7 @@ fig_bf2.update_layout(
     yaxis2=dict(title="Qo Total (m³/d)", overlaying="y", side="right", color=ROLL_COLOR_OIL),
     hovermode="x unified",
     template="plotly_white",
-    legend=LEGEND_BOTTOM,
+   
 )
 st.plotly_chart(fig_bf2, use_container_width=True)
 
@@ -781,7 +781,7 @@ if "Qo_peak" in df_vmut.columns and "cantidad_fracturas" in df_vmut.columns:
         xaxis_title="Campaña de Perforación",
         yaxis_title="Qo Pico / Etapa (m³/d/etapa)",
         template="plotly_white",
-        legend=LEGEND_BOTTOM,
+       
         annotations=[dict(
             x=0.01, y=0.97,
             xref="paper", yref="paper",
