@@ -203,23 +203,6 @@ fig_oil_year.update_layout(
 )
 st.plotly_chart(fig_oil_year)
 
-
-"""
-SECCIÓN DE MÉTRICAS OPERATIVAS — TAB 1 (Indicadores de Actividad)
-=================================================================
-Pegar este bloque AL FINAL del bloque `with tab1:` en
-pages/6_👩‍🔧_Real-time FracData Report.py
-
-Requiere que el contexto ya tenga definido:
-  df_vmut        — DataFrame filtrado a VMUT + SHALE
-  df_con_frac    — df_vmut con id_base_fractura_adjiv not-null
-  data_sorted    — DataFrame completo de producción mensual con columnas:
-                     date, anio, mes, tef, prod_pet, prod_gas, prod_agua,
-                     gas_rate, oil_rate, water_rate, empresaNEW, sigla,
-                     tipopozoNEW, areayacimiento
-  FLUID_COLORS, LEGEND_BOTTOM, X_AXIS_LABEL  — constantes ya definidas
-"""
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
