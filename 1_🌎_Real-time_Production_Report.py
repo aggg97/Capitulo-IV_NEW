@@ -2,10 +2,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import numpy as np
 from dateutil.relativedelta import relativedelta
 from PIL import Image
 
-from utils import BARRELS_PER_M3, COMPANY_REPLACEMENTS, DATASET_URL
+from utils import (
+    BARRELS_PER_M3, COMPANY_REPLACEMENTS, DATASET_URL,
+    calculate_rates, calculate_gor_wc, to_km3_per_day, to_kbbl_per_day,
+    calculate_monthly_incremental, calculate_yoy_metrics, calculate_operator_metrics,
+    calculate_productivity_by_vintage, calculate_base_decline_contribution,
+)
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -18,10 +24,13 @@ def load_and_sort_data(dataset_url: str) -> pd.DataFrame:
             "tef", "empresa", "areayacimiento", "coordenadax", "coordenaday",
             "formprod", "sub_tipo_recurso", "tipopozo",
         ])
-        df["date"]       = pd.to_datetime(df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1")
-        df["gas_rate"]   = df["prod_gas"]  / df["tef"]
-        df["oil_rate"]   = df["prod_pet"]  / df["tef"]
-        df["water_rate"] = df["prod_agua"] / df["tef"]
+        df["date"] = pd.to_datetime(df["anio"].astype(str) + "-" + df["mes"].astype(str) + "-1")
+        
+        # Use safe rate calculation with division-by-zero protection
+        df = calculate_rates(df)
+        df = calculate_gor_wc(df)
+        
+        # Cumulative production
         df["Np"] = df.groupby("sigla")["prod_pet"].cumsum()
         df["Gp"] = df.groupby("sigla")["prod_gas"].cumsum()
         df["Wp"] = df.groupby("sigla")["prod_agua"].cumsum()
@@ -54,7 +63,8 @@ if st.session_state["df"].empty:
     )
     st.stop()
 
-data_sorted = st.session_state["df"]
+# Create a working copy to avoid mutating cached session_state
+data_sorted = st.session_state["df"].copy()
 data_sorted["empresaNEW"] = data_sorted["empresa"].replace(COMPANY_REPLACEMENTS)
 
 
@@ -272,8 +282,8 @@ col7.metric(
     label="📊 Productividad/Pozo (m³/d)",
     value=oil_per_well
 )
-# ── GRÁFICO YoY ────────────────────────────────────────────────────────
-# Agregar totales mensuales
+# ── GRÁFICO YoY & INCREMENTAL PRODUCTION ────────────────────────────────
+
 monthly_totals = (
     data_filtered
     .groupby('date')
@@ -281,21 +291,14 @@ monthly_totals = (
     .reset_index()
     .sort_values('date')
 )
-monthly_totals['oil_rate_km3'] = monthly_totals['oil_rate'] / 1000
-monthly_totals['gas_rate_mm3'] = monthly_totals['gas_rate'] / 1000
-monthly_totals['anio']         = monthly_totals['date'].dt.year
-monthly_totals['mes']          = monthly_totals['date'].dt.month
 
-# Merge con año anterior
-yoy = monthly_totals.merge(
-    monthly_totals[['anio', 'mes', 'oil_rate_km3', 'gas_rate_mm3']],
-    left_on=['anio', 'mes'],
-    right_on=[monthly_totals['anio'] + 1, monthly_totals['mes']],
-    suffixes=('', '_prev')
-)
-yoy['oil_yoy_pct'] = (yoy['oil_rate_km3'] - yoy['oil_rate_km3_prev']) / yoy['oil_rate_km3_prev'] * 100
-yoy['gas_yoy_pct'] = (yoy['gas_rate_mm3'] - yoy['gas_rate_mm3_prev']) / yoy['gas_rate_mm3_prev'] * 100
+# Use robust YoY calculation
+yoy = calculate_yoy_metrics(monthly_totals)
 
+# Calculate incremental changes month-over-month
+monthly_incremental = calculate_monthly_incremental(monthly_totals)
+
+# YoY plot
 fig_yoy = go.Figure()
 fig_yoy.add_bar(
     x=yoy['date'], y=yoy['oil_yoy_pct'],
@@ -308,4 +311,242 @@ fig_yoy.update_layout(
     yaxis_title="Variación YoY (%)",
     hovermode="x unified"
 )
-st.plotly_chart(fig_yoy)
+st.plotly_chart(fig_yoy, use_container_width=True)
+
+# Monthly incremental production
+st.subheader("📈 Producción Incremental Mensual")
+st.caption("Cambio neto mes-a-mes. Identifica crecimiento orgánico vs. estabilización/declinación.")
+
+fig_incremental = go.Figure()
+fig_incremental.add_bar(
+    x=monthly_incremental['date'], y=monthly_incremental['oil_rate_change'],
+    name='Cambio Neto de Petróleo (m³/d)',
+    marker_color=monthly_incremental['oil_rate_change'].apply(
+        lambda v: '#27ae60' if v >= 0 else '#e74c3c'
+    )
+)
+fig_incremental.update_layout(
+    title="Incremento Neto de Producción (m³/d)",
+    xaxis_title="Fecha",
+    yaxis_title="Cambio en Caudal (m³/d)",
+    hovermode="x unified"
+)
+st.plotly_chart(fig_incremental, use_container_width=True)
+
+
+# ── BASE DECLINE vs NEW WELLS CONTRIBUTION ──────────────────────────────────
+
+st.subheader("🔄 Análisis de Base Decline vs Aporte de Pozos Nuevos")
+st.caption(
+    "Separa la producción de pozos existentes (base decline) del aporte "
+    "de nuevos pozos. Crítico para entender trajectoria del portafolio."
+)
+
+decline_analysis = calculate_base_decline_contribution(data_filtered, latest_date)
+
+col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+col_a1.metric(
+    "Producción Base (m³/d)",
+    f"{decline_analysis['base_production']/1000:.1f}k",
+    f"{decline_analysis['base_production']/decline_analysis['total_production']*100:.1f}%"
+)
+col_a2.metric(
+    "Aporte Pozos Nuevos (m³/d)",
+    f"{decline_analysis['new_well_contribution']/1000:.1f}k",
+    f"{decline_analysis['new_well_contribution']/decline_analysis['total_production']*100:.1f}%"
+)
+col_a3.metric(
+    "Pozos Nuevos Agregados",
+    f"{decline_analysis['new_wells_added']}",
+    f"Activos: {decline_analysis['active_wells_current']}"
+)
+col_a4.metric(
+    "Productividad Prom. (m³/d/pozo)",
+    f"{decline_analysis['total_production']/decline_analysis['active_wells_current']:.1f}",
+    f"vs {decline_analysis['base_production']/max(decline_analysis['active_wells_previous'], 1):.1f} mes anterior"
+)
+
+
+# ── OPERATOR BENCHMARKING ────────────────────────────────────────────────────
+
+st.subheader("🏢 Benchmarking por Operador")
+st.caption("Productividad, market share y eficiencia operacional por empresa.")
+
+operator_metrics = calculate_operator_metrics(data_filtered, latest_date, company_col="empresaNEW")
+
+# Heatmap: Operator productivity over time
+operator_over_time = (
+    data_filtered
+    .groupby(['date', 'empresaNEW'])
+    .agg(
+        oil_rate=('oil_rate', 'sum'),
+        active_wells=('sigla', 'nunique')
+    )
+    .reset_index()
+)
+operator_over_time['productivity'] = operator_over_time['oil_rate'] / operator_over_time['active_wells']
+
+# Pivot for heatmap
+heatmap_data = operator_over_time.pivot_table(
+    index='empresaNEW', 
+    columns='date', 
+    values='productivity',
+    aggfunc='mean'
+)
+
+fig_heatmap = go.Figure(
+    data=go.Heatmap(
+        z=heatmap_data.values,
+        x=heatmap_data.columns,
+        y=heatmap_data.index,
+        colorscale='RdYlGn',
+        colorbar=dict(title="m³/d/pozo")
+    )
+)
+fig_heatmap.update_layout(
+    title="Productividad por Operador y Período (m³/d/pozo)",
+    xaxis_title="Período",
+    yaxis_title="Operador",
+    height=400
+)
+st.plotly_chart(fig_heatmap, use_container_width=True)
+
+# Market share treemap
+fig_treemap = px.treemap(
+    operator_metrics,
+    labels="empresaNEW",
+    parents=[""] * len(operator_metrics),
+    values="total_oil_rate",
+    color="market_share_oil_pct",
+    color_continuous_scale="Blues",
+    title="Market Share de Producción de Petróleo"
+)
+fig_treemap.update_layout(height=400)
+st.plotly_chart(fig_treemap, use_container_width=True)
+
+
+# ── PRODUCTIVITY BY VINTAGE (COHORT ANALYSIS) ────────────────────────────────
+
+st.subheader("📊 Análisis de Productividad por Campaña (Cohort)")
+st.caption(
+    "Compara rendimiento de diferentes vintages. Permite medir aprendizaje operacional, "
+    "mejoras en completaciones, y quality de landing zone."
+)
+
+# Add start_year to data
+data_with_vintage = data_filtered.copy()
+well_start_year = (
+    data_with_vintage.groupby("sigla")["anio"].min()
+    .reset_index()
+    .rename(columns={"anio": "start_year"})
+)
+data_with_vintage = data_with_vintage.merge(well_start_year, on="sigla")
+
+cohort_productivity = calculate_productivity_by_vintage(data_with_vintage)
+
+# Filter to recent cohorts for readability
+recent_cohorts = cohort_productivity[cohort_productivity['start_year'] >= 2015].copy()
+
+fig_cohort = go.Figure()
+fig_cohort.add_scatter(
+    x=recent_cohorts['start_year'],
+    y=recent_cohorts['median_oil_rate'],
+    mode='lines+markers',
+    name='Mediana Caudal Petróleo',
+    marker=dict(size=10)
+)
+fig_cohort.add_scatter(
+    x=recent_cohorts['start_year'],
+    y=recent_cohorts['avg_oil_rate'],
+    mode='lines+markers',
+    name='Promedio Caudal Petróleo',
+    marker=dict(size=8, symbol='diamond')
+)
+fig_cohort.update_layout(
+    title="Productividad Promedio por Campaña (Vintage)",
+    xaxis_title="Año de Inicio",
+    yaxis_title="Caudal de Petróleo (m³/d)",
+    hovermode="x unified",
+    height=400
+)
+st.plotly_chart(fig_cohort, use_container_width=True)
+
+# Cohort table
+st.write("**Detalle por Campaña:**")
+cohort_table = recent_cohorts[[
+    'start_year', 'wells_count', 'avg_oil_rate', 'median_oil_rate', 
+    'avg_gas_rate', 'total_np', 'total_gp'
+]].copy()
+cohort_table.columns = ['Campaña', 'Nº Pozos', 'Promedio Crudo (m³/d)', 'Mediana Crudo (m³/d)',
+                        'Promedio Gas (m³/d)', 'Total Np (m³)', 'Total Gp (m³)']
+cohort_table = cohort_table.sort_values('Campaña', ascending=False)
+st.dataframe(cohort_table, use_container_width=True)
+
+
+# ── OIL/WATER EVOLUTION & GOR TRACKING ──────────────────────────────────────
+
+st.subheader("💧 Evolución de Oil vs Water & GOR Temporal")
+st.caption(
+    "Monitorea madurez de pozos, breakthrough de agua, interferencias, y comportamiento "
+    "de fluido. Crítico para identificar issues operacionales."
+)
+
+monthly_fluid = (
+    data_filtered
+    .groupby('date')
+    .agg(
+        prod_oil=('prod_pet', 'sum'),
+        prod_water=('prod_agua', 'sum'),
+        prod_gas=('prod_gas', 'sum')
+    )
+    .reset_index()
+)
+
+# Calculate ratios
+monthly_fluid['water_oil_ratio'] = np.where(
+    monthly_fluid['prod_oil'] > 0,
+    monthly_fluid['prod_water'] / monthly_fluid['prod_oil'],
+    0
+)
+monthly_fluid['GOR'] = np.where(
+    monthly_fluid['prod_oil'] > 0,
+    monthly_fluid['prod_gas'] / monthly_fluid['prod_oil'],
+    0
+)
+
+# Stacked area: Oil + Water
+fig_oil_water = go.Figure()
+fig_oil_water.add_fill(
+    x=monthly_fluid['date'], 
+    y=monthly_fluid['prod_oil']/1000,
+    name='Petróleo (m³/d)',
+    mode='lines',
+    line=dict(color='green')
+)
+fig_oil_water.add_fill(
+    x=monthly_fluid['date'],
+    y=monthly_fluid['prod_water']/1000,
+    name='Agua (m³/d)',
+    mode='lines',
+    line=dict(color='blue'),
+    stackgroup='one'
+)
+fig_oil_water.update_layout(
+    title="Evolución de Petróleo vs Agua",
+    xaxis_title="Fecha",
+    yaxis_title="Producción (m³/d)",
+    hovermode="x unified",
+    height=400
+)
+st.plotly_chart(fig_oil_water, use_container_width=True)
+
+# GOR evolution
+fig_gor = px.line(
+    monthly_fluid,
+    x='date',
+    y='GOR',
+    title="Evolución Temporal del GOR (m³gas/m³oil)",
+    labels={'date': 'Fecha', 'GOR': 'GOR (m³/m³)'},
+)
+fig_gor.update_layout(height=400, hovermode='x unified')
+st.plotly_chart(fig_gor, use_container_width=True)
