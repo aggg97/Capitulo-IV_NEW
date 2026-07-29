@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
-from utils import COMPANY_REPLACEMENTS, get_fluid_classification
+from utils import COMPANY_REPLACEMENTS, get_fluid_classification, BARRELS_PER_M3
 
 
 # ── Session state ─────────────────────────────────────────────────────────────
@@ -742,6 +742,86 @@ with comp_tab_cum:
                 )
         st.dataframe(display_cum, use_container_width=True, hide_index=True)
 
+    # ── Tabla de producción actual por área / empresa ─────────────────────────
+    st.markdown("---")
+    st.markdown("#### 🛢️ Producción Actual — Última Alocación")
+    st.caption(
+        "Caudal de la última fecha disponible para cada combinación seleccionada. "
+        "Incluye petróleo en m³/d y bbl/d, gas en km³/d, agua en m³/d y pozos activos."
+    )
+
+    latest_date_global = data_sorted[data_sorted["tef"] > 0]["date"].max()
+
+    current_rows = []
+    for emp, area, color in combos:
+        latest_base = data_sorted[
+            (data_sorted["empresaNEW"] == emp) &
+            (data_sorted["areayacimiento"] == area) &
+            (data_sorted["tef"] > 0)
+        ]
+        if latest_base.empty:
+            continue
+
+        # Última fecha con datos para esta combinación
+        last_dt = latest_base["date"].max()
+        last_slice = latest_base[latest_base["date"] == last_dt]
+
+        qo_m3d  = last_slice["oil_rate"].sum()
+        qg_km3d = last_slice["gas_rate"].sum()
+        qw_m3d  = last_slice["water_rate"].sum() if "water_rate" in last_slice.columns else np.nan
+        n_wells = last_slice["sigla"].nunique()
+
+        current_rows.append({
+            "Empresa":           emp,
+            "Área":              area,
+            "Fecha dato":        last_dt.date(),
+            "Qo (m³/d)":        round(qo_m3d, 1),
+            "Qo (bbl/d)":       round(qo_m3d * BARRELS_PER_M3, 0),
+            "Qg (km³/d)":       round(qg_km3d, 1),
+            "Qw (m³/d)":        round(qw_m3d, 1) if not np.isnan(qw_m3d) else None,
+            "Pozos activos":     n_wells,
+            "_color":            color,
+        })
+
+    if current_rows:
+        curr_df = pd.DataFrame(current_rows)
+
+        # Gráfico comparativo Qo
+        fig_curr_oil = px.bar(
+            curr_df.sort_values("Qo (m³/d)", ascending=True),
+            x="Qo (m³/d)", y="Área",
+            color="Empresa",
+            text="Qo (m³/d)",
+            orientation="h",
+            hover_data={"Qo (bbl/d)": True, "Pozos activos": True, "Fecha dato": True},
+            height=max(280, len(current_rows) * 45),
+            title="Qo actual por área / empresa (m³/d)",
+            labels={"Área": ""},
+        )
+        fig_curr_oil.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
+        fig_curr_oil.update_layout(template="plotly_white", xaxis_title="m³/d")
+        st.plotly_chart(fig_curr_oil, use_container_width=True)
+
+        # Tabla con todas las columnas
+        display_curr = curr_df.drop(columns=["_color"]).copy()
+        display_curr["Qo (m³/d)"]  = display_curr["Qo (m³/d)"].map("{:,.1f}".format)
+        display_curr["Qo (bbl/d)"] = display_curr["Qo (bbl/d)"].map("{:,.0f}".format)
+        display_curr["Qg (km³/d)"] = display_curr["Qg (km³/d)"].map("{:,.1f}".format)
+        display_curr["Qw (m³/d)"]  = display_curr["Qw (m³/d)"].apply(
+            lambda v: f"{v:,.1f}" if v is not None else "—"
+        )
+        st.dataframe(display_curr, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            label="⬇️ Descargar producción actual como CSV",
+            data=curr_df.drop(columns=["_color"]).to_csv(index=False).encode("utf-8"),
+            file_name=f"produccion_actual_comparacion_{years_label}.csv",
+            mime="text/csv",
+            key="dl_curr_prod",
+        )
+    else:
+        st.info("No hay datos de producción para las combinaciones seleccionadas.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN 3 — RANKING DE MEJORES POZOS + ENVÍO A WATCHLIST
@@ -750,7 +830,7 @@ with comp_tab_cum:
 st.divider()
 st.header("🏆 Ranking de Mejores Pozos")
 st.caption(
-    "Ranking por caudal pico en el área/años seleccionados arriba. "
+    "Solo se consideran pozos que **iniciaron** en los años seleccionados. "
     "Podés enviar pozos a la Watchlist para hacer seguimiento entre páginas."
 )
 
@@ -758,14 +838,58 @@ st.caption(
 if "watchlist_wells" not in st.session_state:
     st.session_state["watchlist_wells"] = []
 
-# ── Calcular caudal pico por pozo en el área/años elegidos ───────────────────
+# ── Pozos que iniciaron en los años seleccionados ─────────────────────────────
+_well_start = (
+    data_sorted[
+        (data_sorted["empresaNEW"] == selected_company) &
+        (data_sorted["areayacimiento"] == selected_area) &
+        (data_sorted["tef"] > 0)
+    ]
+    .groupby("sigla")["anio"]
+    .min()
+    .rename("start_year")
+    .reset_index()
+)
+_wells_in_years = _well_start[_well_start["start_year"].isin(selected_years)]["sigla"]
+
 rank_data = data_sorted[
-    (data_sorted["empresaNEW"] == selected_company) &
-    (data_sorted["areayacimiento"] == selected_area) &
-    (data_sorted["anio"].isin(selected_years)) &
+    (data_sorted["sigla"].isin(_wells_in_years)) &
     (data_sorted["tef"] > 0)
 ].copy()
 
+# ── Pozos nuevos por año ──────────────────────────────────────────────────────
+st.markdown("#### 📅 Pozos nuevos por año de inicio")
+
+new_wells_by_year = (
+    _well_start[_well_start["start_year"].isin(selected_years)]
+    .groupby("start_year")["sigla"]
+    .nunique()
+    .rename("Pozos nuevos")
+    .reset_index()
+    .rename(columns={"start_year": "Año"})
+    .sort_values("Año")
+)
+
+# Gráfico de barras
+fig_new_wells = px.bar(
+    new_wells_by_year,
+    x="Año", y="Pozos nuevos",
+    text="Pozos nuevos",
+    color="Año",
+    color_discrete_map={yr: year_color_map.get(yr, "#888") for yr in new_wells_by_year["Año"]},
+    labels={"Año": "Año de inicio", "Pozos nuevos": "N° Pozos"},
+    height=320,
+    title=f"Pozos nuevos por año — {selected_area}",
+)
+fig_new_wells.update_traces(textposition="outside")
+fig_new_wells.update_layout(
+    template="plotly_white",
+    showlegend=False,
+    xaxis=dict(type="category"),
+)
+st.plotly_chart(fig_new_wells, use_container_width=True)
+
+# ── Caudal pico por pozo (solo pozos de los años seleccionados) ───────────────
 peak_df = (
     rank_data.groupby("sigla")
     .agg(
@@ -844,6 +968,54 @@ st.download_button(
     file_name=f"ranking_{selected_company}_{selected_area}_{years_label}.csv",
     mime="text/csv",
     key="dl_ranking",
+)
+
+# ── Tabla completa de todos los pozos nuevos con caudal pico ──────────────────
+st.markdown("---")
+st.markdown("#### 📋 Tabla completa — todos los pozos nuevos con caudal pico")
+st.caption(
+    "Incluye todos los pozos que iniciaron en los años seleccionados, "
+    "no solo el top N del ranking."
+)
+
+full_table = (
+    peak_df
+    .merge(
+        new_wells_by_year.rename(columns={"Año": "año_inicio"}),
+        on="año_inicio",
+        how="left",
+    )
+    .sort_values(["año_inicio", "Qo_pico"], ascending=[True, False])
+    .reset_index(drop=True)
+)
+full_table.index += 1
+
+full_display = full_table.copy()
+full_display["Qo_pico"]  = full_display["Qo_pico"].map("{:,.1f}".format)
+full_display["Qg_pico"]  = full_display["Qg_pico"].map("{:,.1f}".format)
+full_display["Np_total"] = full_display["Np_total"].map("{:,.0f}".format)
+full_display["Gp_total"] = full_display["Gp_total"].map("{:,.0f}".format)
+full_display = full_display.rename(columns={
+    "Pozo":        "Pozo",
+    "año_inicio":  "Año inicio",
+    "Qo_pico":     "Qo pico (m³/d)",
+    "Qg_pico":     "Qg pico (km³/d)",
+    "Np_total":    "Np total (m³)",
+    "Gp_total":    "Gp total (km³)",
+    "meses_prod":  "Meses prod.",
+    "area":        "Área",
+    "empresa":     "Empresa",
+    "Pozos nuevos":"Pozos nuevos ese año",
+})
+
+st.dataframe(full_display, use_container_width=True)
+
+st.download_button(
+    label="⬇️ Descargar tabla completa como CSV",
+    data=full_table.to_csv(index=False).encode("utf-8"),
+    file_name=f"pozos_nuevos_{selected_company}_{selected_area}_{years_label}.csv",
+    mime="text/csv",
+    key="dl_full_table",
 )
 
 # ── Enviar pozos a la Watchlist ───────────────────────────────────────────────
