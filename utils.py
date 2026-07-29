@@ -223,7 +223,7 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         EUR_90     =("EUR_90",     "max"),
         EUR_180    =("EUR_180",    "max"),
     )
-    for col in ["empresaNEW", "formprod", "sub_tipo_recurso", "tipopozoNEW"]:
+    for col in ["empresaNEW", "formprod", "sub_tipo_recurso", "tipopozoNEW", "areayacimiento"]:
         if col in df.columns:
             agg[col] = (col, "first")
 
