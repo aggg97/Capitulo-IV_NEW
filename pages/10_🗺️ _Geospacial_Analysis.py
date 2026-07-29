@@ -34,7 +34,9 @@ PAD_BUFFER_M = 30
 DEG_PER_METRE_LAT = 1 / 111_320
 DEG_PER_METRE_LON = 1 / (111_320 * np.cos(np.radians(38)))
 
-map_STYLE = "carto-positron"
+# Estilo de mapa base para px.scatter_map (MapLibre). "open-street-map" no
+# requiere token y es la referencia visual más reconocible para este dataset.
+map_STYLE = "open-street-map"
 
 FLUID_COLORS = {
     "Petrolífero": "#2ecc71",
@@ -207,6 +209,16 @@ def compute_pads(df_prod: pd.DataFrame) -> pd.DataFrame:
 # HELPERS — PRODUCTION AGGREGATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _safe_mode(s: pd.Series, default: str = "Sin dato"):
+    """
+    Returns the most frequent non-null value in s, or `default` if s has
+    no non-null values at all (s.mode() drops NaNs, so it can come back
+    empty even when s itself isn't — this guards against that case).
+    """
+    m = s.mode()
+    return m.iloc[0] if not m.empty else default
+
+
 def build_pad_production(
     df_prod: pd.DataFrame,
     df_pads: pd.DataFrame,
@@ -220,15 +232,15 @@ def build_pad_production(
     agg = (
         prod.groupby("pad_name")
         .agg(
-            n_wells         =("sigla",      "nunique"),
-            total_oil_m3    =("prod_pet",   "sum"),
-            total_gas_km3   =("prod_gas",   "sum"),
-            total_water_m3  =("prod_agua",  "sum"),
-            peak_oil_rate   =("oil_rate",   "max"),
-            peak_gas_rate   =("gas_rate",   "max"),
-            empresa         =("empresaNEW", lambda s: s.mode().iloc[0] if not s.empty else ""),
-            area            =("areayacimiento", lambda s: s.mode().iloc[0] if not s.empty else ""),
-            fluid           =("tipopozoNEW", lambda s: s.mode().iloc[0] if not s.empty else ""),
+            n_wells         =("sigla",          "nunique"),
+            total_oil_m3    =("prod_pet",       "sum"),
+            total_gas_km3   =("prod_gas",       "sum"),
+            total_water_m3  =("prod_agua",      "sum"),
+            peak_oil_rate   =("oil_rate",       "max"),
+            peak_gas_rate   =("gas_rate",       "max"),
+            empresa         =("empresaNEW",     _safe_mode),
+            area            =("areayacimiento", _safe_mode),
+            fluid           =("tipopozoNEW",    _safe_mode),
         )
         .reset_index()
     )
