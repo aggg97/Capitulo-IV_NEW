@@ -34,9 +34,9 @@ PAD_BUFFER_M = 30
 DEG_PER_METRE_LAT = 1 / 111_320
 DEG_PER_METRE_LON = 1 / (111_320 * np.cos(np.radians(38)))
 
-# Estilo de mapa base para px.scatter_map (MapLibre). "open-street-map" no
-# requiere token y es la referencia visual más reconocible para este dataset.
-map_STYLE = "open-street-map"
+# The maps below use Plotly's SVG geo renderer rather than MapLibre.  This is
+# intentional: MapLibre maps need WebGL and external raster tiles, either of
+# which can result in a blank chart inside some Streamlit/browser setups.
 
 FLUID_COLORS = {
     "Petrolífero": "#2ecc71",
@@ -80,6 +80,25 @@ def normalise_wgs84_coordinates(
 def map_center(df: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon") -> dict:
     """Center a MapLibre map over the currently displayed records."""
     return {"lat": float(df[lat_col].mean()), "lon": float(df[lon_col].mean())}
+
+
+def configure_geo_map(fig: go.Figure) -> go.Figure:
+    """Style an SVG geographic map that works without MapLibre tiles/WebGL."""
+    fig.update_geos(
+        fitbounds="locations",
+        projection_type="mercator",
+        showland=True,
+        landcolor="#edf2f7",
+        showocean=True,
+        oceancolor="#dbeafe",
+        showcountries=True,
+        countrycolor="#94a3b8",
+        showcoastlines=True,
+        coastlinecolor="#64748b",
+        lataxis_showgrid=True,
+        lonaxis_showgrid=True,
+    )
+    return fig
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -396,7 +415,7 @@ with tab_map:
         "Pad":            "pad_name",
     }[color_by]
 
-    fig_map = px.scatter_map(
+    fig_map = px.scatter_geo(
         wells_map,
         lat="lat",
         lon="lon",
@@ -409,13 +428,12 @@ with tab_map:
             "lat":            ":.4f",
             "lon":            ":.4f",
         },
-        zoom=8,
-        center=map_center(wells_map),
+        scope="south america",
         height=620,
-        map_style=map_STYLE,
         title="Mapa de Pozos — Vaca Muerta",
     )
     fig_map.update_traces(marker=dict(size=6, opacity=0.80))
+    configure_geo_map(fig_map)
     fig_map.update_layout(margin=dict(l=0, r=0, t=40, b=0), legend_title=color_by)
     st.plotly_chart(fig_map, use_container_width=True)
 
@@ -480,7 +498,7 @@ with tab_pads:
 
     pad_map_df = df_pads.rename(columns={"x": "lon", "y": "lat"})
 
-    fig_pads = px.scatter_map(
+    fig_pads = px.scatter_geo(
         pad_map_df,
         lat="lat",
         lon="lon",
@@ -493,13 +511,12 @@ with tab_pads:
             "lat":            ":.4f",
             "lon":            ":.4f",
         },
-        zoom=8,
-        center=map_center(pad_map_df),
+        scope="south america",
         height=580,
-        map_style=map_STYLE,
         title="Agrupación de Pozos por Pad (buffer 30 m)",
     )
     fig_pads.update_traces(marker=dict(size=7, opacity=0.85))
+    configure_geo_map(fig_pads)
     fig_pads.update_layout(
         margin=dict(l=0, r=0, t=40, b=0),
         showlegend=False,
@@ -599,7 +616,7 @@ with tab_prod:
         st.warning("No hay pads con coordenadas válidas para el mapa de producción.")
         st.stop()
 
-    fig_bubble_map = px.scatter_map(
+    fig_bubble_map = px.scatter_geo(
         bubble_map_df,
         lat="lat", lon="lon",
         size=metric_bubble,
@@ -614,12 +631,11 @@ with tab_prod:
             "total_gas_km3": ":,.1f",
             "lat": False, "lon": False,
         },
-        zoom=8, height=580,
-        center=map_center(bubble_map_df),
-        map_style=map_STYLE,
+        scope="south america", height=580,
         size_max=35,
         title="Producción Acumulada por Pad",
     )
+    configure_geo_map(fig_bubble_map)
     fig_bubble_map.update_layout(
         margin=dict(l=0, r=0, t=40, b=0),
         legend_title="Fluido",
