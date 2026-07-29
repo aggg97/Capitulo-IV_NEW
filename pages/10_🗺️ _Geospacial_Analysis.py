@@ -45,6 +45,43 @@ FLUID_COLORS = {
 }
 
 
+def normalise_wgs84_coordinates(
+    df: pd.DataFrame, lon_col: str, lat_col: str
+) -> pd.DataFrame:
+    """Return only valid WGS-84 coordinates, converting strings when needed.
+
+    The production files occasionally contain coordinates as text.  This also
+    detects the common X/Y inversion (latitude stored in X and longitude in Y).
+    It deliberately does *not* try to convert projected coordinates in metres:
+    those need their EPSG code before they can be mapped correctly.
+    """
+    out = df.copy()
+    out[lon_col] = pd.to_numeric(out[lon_col], errors="coerce")
+    out[lat_col] = pd.to_numeric(out[lat_col], errors="coerce")
+
+    normal = (
+        out[lon_col].between(-75, -55)
+        & out[lat_col].between(-42, -30)
+    )
+    swapped = (
+        out[lon_col].between(-42, -30)
+        & out[lat_col].between(-75, -55)
+    )
+    if swapped.sum() > normal.sum():
+        out[[lon_col, lat_col]] = out[[lat_col, lon_col]].to_numpy()
+        normal = (
+            out[lon_col].between(-75, -55)
+            & out[lat_col].between(-42, -30)
+        )
+
+    return out.loc[normal].copy()
+
+
+def map_center(df: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon") -> dict:
+    """Center a MapLibre map over the currently displayed records."""
+    return {"lat": float(df[lat_col].mean()), "lon": float(df[lon_col].mean())}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SESSION STATE — load & preprocess
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,11 +226,8 @@ def compute_pads(df_prod: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
-    # Drop wells with obviously invalid coords (0,0 or far outside Argentina)
-    wells = wells[
-        (wells["x"].between(-75, -55)) &
-        (wells["y"].between(-42, -30))
-    ].reset_index(drop=True)
+    # Keep only usable geographic coordinates (and repair inverted X/Y files).
+    wells = normalise_wgs84_coordinates(wells, "x", "y").reset_index(drop=True)
 
     if wells.empty:
         return pd.DataFrame()
@@ -326,9 +360,7 @@ with tab_map:
         .dropna(subset=coord_cols)
         .rename(columns={"coordenadax": "lon", "coordenaday": "lat"})
     )
-    wells_map = wells_map[
-        wells_map["lon"].between(-75, -55) & wells_map["lat"].between(-42, -30)
-    ]
+    wells_map = normalise_wgs84_coordinates(wells_map, "lon", "lat")
 
     if has_pads:
         wells_map = wells_map.merge(
@@ -336,6 +368,15 @@ with tab_map:
         )
 
     st.markdown(f"**{len(wells_map):,} pozos** visualizados (según filtros activos).")
+
+    if wells_map.empty:
+        st.error(
+            "No hay coordenadas geográficas válidas para mostrar. Se esperan "
+            "longitudes entre -75 y -55 y latitudes entre -42 y -30. "
+            "Si los valores son números grandes (coordenadas POSGAR en metros), "
+            "primero hay que convertirlos a WGS-84 (EPSG:4326)."
+        )
+        st.stop()
 
     color_by = st.radio(
         "Colorear por:",
@@ -363,6 +404,7 @@ with tab_map:
             "lon":            ":.4f",
         },
         zoom=8,
+        center=map_center(wells_map),
         height=620,
         map_style=map_STYLE,
         title="Mapa de Pozos — Vaca Muerta",
@@ -446,6 +488,7 @@ with tab_pads:
             "lon":            ":.4f",
         },
         zoom=8,
+        center=map_center(pad_map_df),
         height=580,
         map_style=map_STYLE,
         title="Agrupación de Pozos por Pad (buffer 30 m)",
@@ -545,8 +588,13 @@ with tab_prod:
         }[c],
     )
 
+    bubble_map_df = pad_prod_f.dropna(subset=["lat", "lon"])
+    if bubble_map_df.empty:
+        st.warning("No hay pads con coordenadas válidas para el mapa de producción.")
+        st.stop()
+
     fig_bubble_map = px.scatter_map(
-        pad_prod_f.dropna(subset=["lat", "lon"]),
+        bubble_map_df,
         lat="lat", lon="lon",
         size=metric_bubble,
         color="fluid",
@@ -561,6 +609,7 @@ with tab_prod:
             "lat": False, "lon": False,
         },
         zoom=8, height=580,
+        center=map_center(bubble_map_df),
         map_style=map_STYLE,
         size_max=35,
         title="Producción Acumulada por Pad",
