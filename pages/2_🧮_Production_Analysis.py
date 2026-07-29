@@ -424,12 +424,12 @@ st.download_button(
 st.divider()
 st.header("🔀 Comparación Multi-Área / Multi-Empresa")
 st.caption(
-    "Comparar el perfil de producción promedio (P50) de diferentes áreas, "
-    "incluso de distintas empresas. Cada área/empresa queda con su propio color."
+    "Comparar el perfil de producción (P50) y los indicadores de acumulada "
+    "de diferentes áreas, incluso de distintas empresas."
 )
 
 # ── Selección de combinaciones área + empresa ─────────────────────────────────
-all_companies   = sorted(data_sorted["empresaNEW"].unique())
+all_companies    = sorted(data_sorted["empresaNEW"].unique())
 all_areas_global = sorted(data_sorted["areayacimiento"].unique())
 
 comp_years = st.multiselect(
@@ -441,7 +441,6 @@ comp_years = st.multiselect(
 
 st.markdown("**Agregar áreas para comparar** — podés mezclar empresas:")
 
-# Hasta 6 combinaciones empresa + área
 MAX_COMBOS = 6
 if "comp_combos" not in st.session_state:
     st.session_state["comp_combos"] = 1
@@ -474,13 +473,19 @@ for idx in range(st.session_state["comp_combos"]):
         )
     combos.append((emp, area, COMBO_PALETTE[idx % len(COMBO_PALETTE)]))
 
-# ── Helpers de comparación ────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def get_combo_base(emp: str, area: str) -> pd.DataFrame:
+    return data_sorted[
+        (data_sorted["empresaNEW"] == emp) &
+        (data_sorted["areayacimiento"] == area) &
+        (data_sorted["anio"].isin(comp_years)) &
+        (data_sorted["tef"] > 0)
+    ].copy()
+
 
 def median_profile_time_zero(df: pd.DataFrame, rate_col: str) -> pd.DataFrame:
-    """
-    Normaliza cada pozo a tiempo cero y calcula P50 mensual del rate.
-    Devuelve DataFrame con columnas [month_number, p50, p10, p90].
-    """
+    """P50/P10/P90 normalizado a tiempo cero por pozo."""
     df = df.copy()
     first_prod = (
         df[df[rate_col] > 0]
@@ -501,81 +506,241 @@ def median_profile_time_zero(df: pd.DataFrame, rate_col: str) -> pd.DataFrame:
     return result
 
 
-comp_fluid = st.radio(
-    "Fluido a comparar:",
-    ["Petróleo", "Gas"],
-    horizontal=True,
-    key="comp_fluid",
-)
-comp_rate_col  = "oil_rate" if comp_fluid == "Petróleo" else "gas_rate"
-comp_rate_lbl  = "Caudal de Petróleo (m3/d)" if comp_fluid == "Petróleo" else "Caudal de Gas (km3/d)"
-show_p10_p90   = st.checkbox("Mostrar banda P10–P90", value=True, key="comp_band")
-comp_time_zero = st.checkbox("Usar tiempo cero (mes de producción)", value=True, key="comp_tz")
+def cum_at_tef(df: pd.DataFrame, prod_col: str, tef_limit: int) -> pd.Series:
+    """
+    Acumulada por pozo hasta cumplir tef_limit días de eficiencia acumulada.
+    Devuelve Series indexed por sigla.
+    """
+    df = df.copy()
+    df["cum_tef"] = df.groupby("sigla")["tef"].cumsum()
+    within = df[df["cum_tef"] <= tef_limit]
+    return within.groupby("sigla")[prod_col].sum()
 
-fig_comp = go.Figure()
 
-for emp, area, color in combos:
-    base = data_sorted[
-        (data_sorted["empresaNEW"] == emp) &
-        (data_sorted["areayacimiento"] == area) &
-        (data_sorted["anio"].isin(comp_years)) &
-        (data_sorted["tef"] > 0)
-    ]
-    if base.empty:
-        continue
+# ── TAB de comparación ────────────────────────────────────────────────────────
+comp_tab_rate, comp_tab_cum = st.tabs([
+    "📈 Perfiles de Producción (P50)",
+    "📊 Acumulada por Intervalo (180d / 1y / 5y)",
+])
 
-    label = f"{emp} — {area}"
+# ── TAB A: Perfiles ───────────────────────────────────────────────────────────
+with comp_tab_rate:
+    comp_fluid = st.radio(
+        "Fluido:",
+        ["Petróleo", "Gas"],
+        horizontal=True,
+        key="comp_fluid",
+    )
+    comp_rate_col = "oil_rate" if comp_fluid == "Petróleo" else "gas_rate"
+    comp_rate_lbl = "Caudal de Petróleo (m3/d)" if comp_fluid == "Petróleo" else "Caudal de Gas (km3/d)"
+    show_p10_p90  = st.checkbox("Mostrar banda P10–P90", value=True, key="comp_band")
+    comp_time_zero = st.checkbox("Usar tiempo cero", value=True, key="comp_tz")
 
-    if comp_time_zero:
-        profile = median_profile_time_zero(base, comp_rate_col)
-        x_vals  = profile["month_number"]
-        x_lbl   = "Mes de Producción"
-    else:
-        profile_cal = (
-            base.groupby("date")[comp_rate_col]
-            .median()
-            .reset_index()
-            .sort_values("date")
-        )
-        profile = profile_cal.rename(columns={comp_rate_col: "p50"})
-        profile["p10"] = base.groupby("date")[comp_rate_col].quantile(0.10).values
-        profile["p90"] = base.groupby("date")[comp_rate_col].quantile(0.90).values
-        x_vals = profile["date"]
-        x_lbl  = "Fecha"
+    fig_comp = go.Figure()
+    x_lbl = "Mes de Producción"
 
-    # Banda P10-P90
-    if show_p10_p90:
+    for emp, area, color in combos:
+        base = get_combo_base(emp, area)
+        if base.empty:
+            continue
+        label = f"{emp} — {area}"
+
+        if comp_time_zero:
+            profile = median_profile_time_zero(base, comp_rate_col)
+            x_vals  = profile["month_number"]
+            x_lbl   = "Mes de Producción"
+        else:
+            profile_cal = (
+                base.groupby("date")[comp_rate_col]
+                .median()
+                .reset_index()
+                .sort_values("date")
+            )
+            profile = profile_cal.rename(columns={comp_rate_col: "p50"})
+            profile["p10"] = base.groupby("date")[comp_rate_col].quantile(0.10).values
+            profile["p90"] = base.groupby("date")[comp_rate_col].quantile(0.90).values
+            x_vals = profile["date"]
+            x_lbl  = "Fecha"
+
+        if show_p10_p90:
+            fig_comp.add_trace(go.Scatter(
+                x=pd.concat([x_vals, x_vals[::-1]]),
+                y=pd.concat([profile["p90"], profile["p10"][::-1]]),
+                fill="toself",
+                fillcolor=color,
+                opacity=0.12,
+                line=dict(color="rgba(0,0,0,0)"),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+
         fig_comp.add_trace(go.Scatter(
-            x=pd.concat([x_vals, x_vals[::-1]]),
-            y=pd.concat([profile["p90"], profile["p10"][::-1]]),
-            fill="toself",
-            fillcolor=color,
-            opacity=0.12,
-            line=dict(color="rgba(0,0,0,0)"),
-            showlegend=False,
-            hoverinfo="skip",
+            x=x_vals,
+            y=profile["p50"],
+            mode="lines",
+            name=label,
+            line=dict(color=color, width=2.5),
+            hovertemplate=f"<b>{label}</b><br>{x_lbl}: %{{x}}<br>P50: %{{y:.1f}}<extra></extra>",
         ))
 
-    # Línea P50
-    fig_comp.add_trace(go.Scatter(
-        x=x_vals,
-        y=profile["p50"],
-        mode="lines",
-        name=label,
-        line=dict(color=color, width=2.5),
-        hovertemplate=f"<b>{label}</b><br>{x_lbl}: %{{x}}<br>P50 {comp_rate_lbl}: %{{y:.1f}}<extra></extra>",
-    ))
+    fig_comp.update_layout(
+        title=f"Comparación P50 — {comp_rate_lbl}",
+        xaxis_title=x_lbl,
+        yaxis_title=comp_rate_lbl,
+        hovermode="x unified",
+        template="plotly_white",
+        legend_title="Área / Empresa",
+        height=520,
+    )
+    st.plotly_chart(fig_comp, use_container_width=True)
 
-fig_comp.update_layout(
-    title=f"Comparación P50 — {comp_rate_lbl}",
-    xaxis_title=x_lbl if combos else "Mes",
-    yaxis_title=comp_rate_lbl,
-    hovermode="x unified",
-    template="plotly_white",
-    legend_title="Área / Empresa",
-    height=500,
-)
-st.plotly_chart(fig_comp, use_container_width=True)
+# ── TAB B: Acumulada por intervalo ────────────────────────────────────────────
+with comp_tab_cum:
+    st.caption(
+        "Acumulada P50 por pozo en cada área, a 180 días, 1 año y 5 años de TEF. "
+        "Solo se incluyen pozos que alcanzaron ese umbral de producción."
+    )
+
+    # Intervalos en días (igual que Watchlist)
+    INTERVALS_CUM = {"180 días": 180, "1 año": 365, "5 años": 365 * 5}
+
+    cum_fluid = st.radio(
+        "Fluido:",
+        ["Petróleo", "Gas"],
+        horizontal=True,
+        key="cum_fluid",
+    )
+    cum_prod_col = "prod_pet" if cum_fluid == "Petróleo" else "prod_gas"
+    cum_lbl      = "Petróleo Acumulado (m³)" if cum_fluid == "Petróleo" else "Gas Acumulado (km³)"
+    cum_scale    = 1.0 if cum_fluid == "Petróleo" else 1.0   # km³ ya está en km³ en el dataset
+
+    # Calcular una tabla resumen por combo × intervalo
+    rows_cum = []
+    for emp, area, color in combos:
+        base = get_combo_base(emp, area)
+        if base.empty:
+            continue
+        label = f"{emp} — {area}"
+        n_total = base["sigla"].nunique()
+        row = {"Área / Empresa": label, "Pozos totales": n_total, "_color": color}
+        for interval_lbl, days in INTERVALS_CUM.items():
+            well_cum = cum_at_tef(base, cum_prod_col, days)
+            eligible = well_cum[well_cum > 0]
+            row[f"N pozos ≥{interval_lbl}"] = len(eligible)
+            row[f"P10 @ {interval_lbl}"]    = eligible.quantile(0.10) if not eligible.empty else np.nan
+            row[f"P50 @ {interval_lbl}"]    = eligible.median()        if not eligible.empty else np.nan
+            row[f"P90 @ {interval_lbl}"]    = eligible.quantile(0.90) if not eligible.empty else np.nan
+        rows_cum.append(row)
+
+    if not rows_cum:
+        st.info("Seleccioná al menos una combinación área/empresa con datos.")
+    else:
+        cum_df = pd.DataFrame(rows_cum)
+
+        # ── Gráfico de barras agrupadas por intervalo ─────────────────────────
+        st.markdown("#### Comparación P50 Acumulada por Intervalo")
+
+        for interval_lbl in INTERVALS_CUM:
+            p50_col = f"P50 @ {interval_lbl}"
+            p10_col = f"P10 @ {interval_lbl}"
+            p90_col = f"P90 @ {interval_lbl}"
+            n_col   = f"N pozos ≥{interval_lbl}"
+
+            plot_cum = cum_df.dropna(subset=[p50_col]).sort_values(p50_col, ascending=True)
+            if plot_cum.empty:
+                continue
+
+            fig_cum_bar = go.Figure()
+            for _, r in plot_cum.iterrows():
+                p50v = r[p50_col]
+                p10v = r[p10_col] if not np.isnan(r[p10_col]) else p50v
+                p90v = r[p90_col] if not np.isnan(r[p90_col]) else p50v
+                fig_cum_bar.add_trace(go.Bar(
+                    x=[r["Área / Empresa"]],
+                    y=[p50v],
+                    name=r["Área / Empresa"],
+                    marker_color=r["_color"],
+                    error_y=dict(
+                        type="data",
+                        symmetric=False,
+                        array=[p90v - p50v],
+                        arrayminus=[p50v - p10v],
+                        visible=True,
+                        color="rgba(50,50,50,0.6)",
+                        thickness=2,
+                        width=6,
+                    ),
+                    text=f"{p50v:,.0f}",
+                    textposition="outside",
+                    hovertemplate=(
+                        f"<b>%{{x}}</b><br>"
+                        f"P50: %{{y:,.0f}}<br>"
+                        f"P10: {p10v:,.0f}<br>"
+                        f"P90: {p90v:,.0f}<br>"
+                        f"N pozos: {int(r[n_col])}<extra></extra>"
+                    ),
+                    showlegend=False,
+                ))
+
+            fig_cum_bar.update_layout(
+                title=f"@ {interval_lbl} — P50 {cum_lbl} (barras de error = P10–P90)",
+                xaxis_title=None,
+                yaxis_title=cum_lbl,
+                template="plotly_white",
+                height=380,
+                bargap=0.35,
+            )
+            st.plotly_chart(fig_cum_bar, use_container_width=True)
+
+        # ── Boxplot por área (distribución completa) ──────────────────────────
+        st.markdown("#### Distribución completa — boxplot por área")
+        st.caption("Muestra la distribución de la acumulada individual de cada pozo en cada área.")
+
+        box_interval = st.selectbox(
+            "Intervalo:",
+            list(INTERVALS_CUM.keys()),
+            key="box_interval",
+        )
+        box_days = INTERVALS_CUM[box_interval]
+
+        box_rows = []
+        for emp, area, color in combos:
+            base = get_combo_base(emp, area)
+            if base.empty:
+                continue
+            label = f"{emp} — {area}"
+            well_cum = cum_at_tef(base, cum_prod_col, box_days)
+            eligible = well_cum[well_cum > 0]
+            for val in eligible:
+                box_rows.append({"Área / Empresa": label, cum_lbl: val, "_color": color})
+
+        if box_rows:
+            box_df = pd.DataFrame(box_rows)
+            color_map_box = {r["Área / Empresa"]: r["_color"] for r in rows_cum}
+            fig_box = px.box(
+                box_df,
+                x="Área / Empresa",
+                y=cum_lbl,
+                color="Área / Empresa",
+                color_discrete_map=color_map_box,
+                points="outliers",
+                template="plotly_white",
+                height=420,
+                title=f"Distribución acumulada @ {box_interval}",
+            )
+            fig_box.update_layout(showlegend=False, xaxis_title=None)
+            st.plotly_chart(fig_box, use_container_width=True)
+
+        # ── Tabla resumen ─────────────────────────────────────────────────────
+        st.markdown("#### Tabla Resumen")
+        display_cum = cum_df.drop(columns=["_color"]).copy()
+        # Formatear columnas numéricas
+        for col in display_cum.columns:
+            if col.startswith("P") and "@" in col:
+                display_cum[col] = display_cum[col].map(
+                    lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                )
+        st.dataframe(display_cum, use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
