@@ -59,6 +59,16 @@ df_vmut = df_merged[
     (df_merged["sub_tipo_recurso"] == "SHALE")
 ].copy()
 
+# Garantizar que areayacimiento esté presente (puede no venir del join si
+# create_summary_dataframe fue compilado sin ella en versiones anteriores)
+if "areayacimiento" not in df_vmut.columns or df_vmut["areayacimiento"].isna().all():
+    area_map = (
+        data_sorted[["sigla", "areayacimiento"]]
+        .drop_duplicates("sigla")
+        .set_index("sigla")["areayacimiento"]
+    )
+    df_vmut["areayacimiento"] = df_vmut["sigla"].map(area_map)
+
 # Derived completion metrics
 df_vmut["fracspacing"]        = df_vmut["longitud_rama_horizontal_m"] / df_vmut["cantidad_fracturas"]
 df_vmut["prop_x_etapa"]       = df_vmut["arena_total_tn"] / df_vmut["cantidad_fracturas"]
