@@ -219,6 +219,10 @@ def compute_pads(df_prod: pd.DataFrame) -> pd.DataFrame:
     wells = (
         df_prod[["sigla", "coordenadax", "coordenaday", "anio",
                   "empresaNEW", "tipopozoNEW", "areayacimiento"]]
+        # A well can have no location in its earliest production record but
+        # have one in a later record; discard blank locations *before*
+        # choosing the representative row for that well.
+        .dropna(subset=["coordenadax", "coordenaday"])
         .sort_values("anio", ascending=False)
         .drop_duplicates("sigla")
         .rename(columns={"coordenadax": "x", "coordenaday": "y"})
@@ -356,8 +360,10 @@ with tab_map:
     wells_map = (
         df_filtered[["sigla", "coordenadax", "coordenaday",
                       "empresaNEW", "tipopozoNEW", "areayacimiento"]]
-        .drop_duplicates("sigla")
+        # Do this before drop_duplicates: data_sorted is chronological and
+        # the first record of a well can legitimately lack coordinates.
         .dropna(subset=coord_cols)
+        .drop_duplicates("sigla")
         .rename(columns={"coordenadax": "lon", "coordenaday": "lat"})
     )
     wells_map = normalise_wgs84_coordinates(wells_map, "lon", "lat")
