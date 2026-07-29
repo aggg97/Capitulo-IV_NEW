@@ -224,10 +224,59 @@ st.caption(
 )
 
 
-# ── 0. Base mensual agregada ──────────────────────────────────────────────────
+# ── 0a. Filtros opcionales de área y empresa ──────────────────────────────────
+
+with st.expander("🔍 Filtrar por Área / Empresa (opcional)", expanded=False):
+    st.caption(
+        "Sin selección se usa toda la cuenca. "
+        "Podés combinar área y empresa — ambos filtros se aplican en simultáneo."
+    )
+    adv_f1, adv_f2 = st.columns(2)
+
+    all_adv_areas = sorted(data_sorted["areayacimiento"].dropna().unique())
+    all_adv_companies = sorted(data_sorted["empresaNEW"].dropna().unique())
+
+    with adv_f1:
+        adv_sel_areas = st.multiselect(
+            "Áreas de yacimiento:",
+            options=all_adv_areas,
+            default=[],
+            key="adv_area_filter",
+        )
+    with adv_f2:
+        adv_sel_companies = st.multiselect(
+            "Empresas:",
+            options=all_adv_companies,
+            default=[],
+            key="adv_company_filter",
+        )
+
+# Aplicar filtros al dataset base de esta sección
+_adv_base = data_sorted[data_sorted["tef"] > 0].copy()
+if adv_sel_areas:
+    _adv_base = _adv_base[_adv_base["areayacimiento"].isin(adv_sel_areas)]
+if adv_sel_companies:
+    _adv_base = _adv_base[_adv_base["empresaNEW"].isin(adv_sel_companies)]
+
+if _adv_base.empty:
+    st.warning("No hay datos para los filtros seleccionados. Ajustá la selección.")
+    st.stop()
+
+# Label para títulos
+_adv_scope = ""
+if adv_sel_areas or adv_sel_companies:
+    parts = []
+    if adv_sel_areas:
+        parts.append(", ".join(adv_sel_areas))
+    if adv_sel_companies:
+        parts.append(", ".join(adv_sel_companies))
+    _adv_scope = f" — {' · '.join(parts)}"
+
+
+# ── 0b. Base mensual agregada (respeta filtros) ───────────────────────────────
 
 monthly = (
-    data_sorted[data_sorted["tef"] > 0]
+    _adv_base
     .groupby("date")
     .agg(
         oil_rate    =("oil_rate",   "sum"),
@@ -343,7 +392,7 @@ fig_roll.add_trace(go.Scatter(
     hovertemplate="Fecha: %{x}<br>Media 6m: %{y:,.1f}",
 ))
 fig_roll.update_layout(
-    title=f"Producción Total de {fluid_roll} — Mensual vs Rolling Average",
+    title=f"Producción Total de {fluid_roll} — Mensual vs Rolling Average{_adv_scope}",
     xaxis_title="Fecha", yaxis_title=y_lbl,
     hovermode="x unified", template="plotly_white", legend=LEGEND_BOTTOM,
 )
@@ -422,7 +471,7 @@ if var_mode in ["MoM + YoY", "Solo YoY"]:
 
 fig_var.add_hline(y=0, line_color="rgba(0,0,0,0.25)", line_width=1.5)
 fig_var.update_layout(
-    title="Variación MoM (barras agrupadas) y YoY (líneas) — Petróleo vs Gas",
+    title=f"Variación MoM (barras agrupadas) y YoY (líneas) — Petróleo vs Gas{_adv_scope}",
     xaxis_title="Fecha",
     yaxis_title="Variación (%)",
     barmode="group",
@@ -469,7 +518,7 @@ fig_incr.add_trace(go.Scatter(
 ))
 fig_incr.add_hline(y=0, line_color="rgba(0,0,0,0.3)", line_width=1.5)
 fig_incr.update_layout(
-    title=f"Producción Incremental Mensual Neta — {incr_fluid}",
+    title=f"Producción Incremental Mensual Neta — {incr_fluid}{_adv_scope}",
     xaxis_title="Fecha", yaxis_title=_inc_lbl,
     hovermode="x unified", template="plotly_white", legend=LEGEND_BOTTOM,
 )
@@ -519,7 +568,7 @@ layout_gw = dict(
 )
 if gorwor_sel == "Ambas":
     layout_gw["yaxis2"] = dict(title="WOR (m³/m³)", overlaying="y", side="right")
-fig_gw.update_layout(**layout_gw)
+fig_gw.update_layout(**{**layout_gw, "title": f"Evolución GOR y WOR{_adv_scope}"})
 st.plotly_chart(fig_gw, use_container_width=True)
 
 
@@ -539,7 +588,7 @@ _ms_lbl  = "Petróleo (m³/d)" if ms_fluid == "Petróleo" else "Gas (km³/d)"
 ms_n = st.slider("Top N operadores (resto = 'Otros')", min_value=3, max_value=12, value=6, key="ms_n")
 
 company_monthly = (
-    data_sorted[data_sorted["tef"] > 0]
+    _adv_base
     .groupby(["date", "empresaNEW"])[_ms_rate]
     .sum()
     .reset_index()
@@ -573,7 +622,7 @@ for i, co in enumerate(all_labels):
         customdata=co_data[_ms_rate].values,
     ))
 fig_ms.update_layout(
-    title=f"Market Share de Producción de {ms_fluid} por Operador",
+    title=f"Market Share de Producción de {ms_fluid} por Operador{_adv_scope}",
     xaxis_title="Fecha", yaxis_title="Participación (%)",
     hovermode="x unified", template="plotly_white", legend=LEGEND_BOTTOM,
     yaxis=dict(range=[0, 100], ticksuffix="%"),
@@ -615,7 +664,7 @@ fig_bf1.add_trace(go.Scatter(
     hovertemplate="Fecha: %{x}<br>%{y:,.2f} " + _bf_lbl,
 ))
 fig_bf1.update_layout(
-    title=f"Productividad por Pozo Activo — {bf_fluid} (señal de madurez brownfield)",
+    title=f"Productividad por Pozo Activo — {bf_fluid} (señal de madurez brownfield){_adv_scope}",
     xaxis_title="Fecha", yaxis_title=_bf_lbl,
     hovermode="x unified", template="plotly_white", legend=LEGEND_BOTTOM,
 )
@@ -636,7 +685,7 @@ fig_bf2.add_trace(go.Scatter(
     hovertemplate="Fecha: %{x}<br>Qo: %{y:,.0f} m³/d",
 ))
 fig_bf2.update_layout(
-    title="Crecimiento de Base Instalada: Pozos Activos vs Producción Total",
+    title=f"Crecimiento de Base Instalada: Pozos Activos vs Producción Total{_adv_scope}",
     xaxis_title="Fecha",
     yaxis =dict(title="Pozos Activos",    color=BROWNFIELD_COLOR),
     yaxis2=dict(title="Qo Total (m³/d)", overlaying="y", side="right", color=ROLL_COLOR_OIL),
@@ -657,7 +706,7 @@ with st.spinner("Cargando datos de fractura para eficiencia de capital…"):
 if has_frac_data:
     # Peak rate por pozo desde datos de producción
     peaks_main = (
-        data_filtered
+        _adv_base
         .groupby("sigla")
         .agg(
             Qo_peak   =("oil_rate",   "max"),
@@ -669,7 +718,7 @@ if has_frac_data:
     )
     # Clasificación simple de fluido por GOR acumulado
     gor_class = (
-        data_filtered.groupby("sigla")[["Np", "Gp"]].max().reset_index()
+        _adv_base.groupby("sigla")[["Np", "Gp"]].max().reset_index()
     )
     gor_class["GOR"] = (gor_class["Gp"] / gor_class["Np"].replace(0, np.nan) * 1000).fillna(100_000)
     gor_class["fluido"] = gor_class["GOR"].apply(
