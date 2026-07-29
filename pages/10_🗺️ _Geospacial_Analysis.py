@@ -283,8 +283,31 @@ def build_pad_production(
     """
     Join pad assignments to the monthly production table and aggregate
     total and peak production per pad.
+
+    Caudal pico promedio por pad:
+        - Para cada pozo se calcula su caudal pico individual (máximo mensual).
+        - El caudal pico del pad = suma de caudales pico de sus pozos / n_wells.
+    Esto refleja la productividad media de un pozo representativo del pad.
     """
     prod = df_prod.merge(df_pads[["sigla", "pad_name", "pad_id"]], on="sigla", how="inner")
+
+    # Per-well peak rates, then average across wells in the same pad
+    well_peaks = (
+        prod.groupby(["pad_name", "sigla"])
+        .agg(
+            well_peak_oil  =("oil_rate",  "max"),
+            well_peak_gas  =("gas_rate",  "max"),
+        )
+        .reset_index()
+    )
+    pad_avg_peaks = (
+        well_peaks.groupby("pad_name")
+        .agg(
+            avg_peak_oil_rate =("well_peak_oil", "mean"),
+            avg_peak_gas_rate =("well_peak_gas", "mean"),
+        )
+        .reset_index()
+    )
 
     agg = (
         prod.groupby("pad_name")
@@ -293,14 +316,14 @@ def build_pad_production(
             total_oil_m3    =("prod_pet",       "sum"),
             total_gas_km3   =("prod_gas",       "sum"),
             total_water_m3  =("prod_agua",      "sum"),
-            peak_oil_rate   =("oil_rate",       "max"),
-            peak_gas_rate   =("gas_rate",       "max"),
             empresa         =("empresaNEW",     _safe_mode),
             area            =("areayacimiento", _safe_mode),
             fluid           =("tipopozoNEW",    _safe_mode),
         )
         .reset_index()
     )
+
+    agg = agg.merge(pad_avg_peaks, on="pad_name", how="left")
 
     # Centroid of each pad (mean lat/lon of member wells)
     centroids = (
@@ -392,8 +415,6 @@ with tab_map:
             df_pads[["sigla", "pad_name"]], on="sigla", how="left"
         )
 
-    st.markdown(f"**{len(wells_map):,} pozos** visualizados (según filtros activos).")
-
     if wells_map.empty:
         st.error(
             "No hay coordenadas geográficas válidas para mostrar. Se esperan "
@@ -402,6 +423,23 @@ with tab_map:
             "primero hay que convertirlos a WGS-84 (EPSG:4326)."
         )
         st.stop()
+
+    # ── Filtro por área (dentro del tab) ─────────────────────────────────────
+    all_areas_map = sorted(wells_map["areayacimiento"].dropna().unique())
+    sel_areas_map = st.multiselect(
+        "Filtrar por área de yacimiento:",
+        all_areas_map,
+        default=[],
+        key="map_area_filter",
+        help="Seleccioná una o más áreas para enfocar el mapa. Sin selección se muestran todas.",
+    )
+    if sel_areas_map:
+        wells_map = wells_map[wells_map["areayacimiento"].isin(sel_areas_map)]
+        if wells_map.empty:
+            st.warning("No hay pozos con coordenadas válidas para las áreas seleccionadas.")
+            st.stop()
+
+    st.markdown(f"**{len(wells_map):,} pozos** visualizados (según filtros activos).")
 
     color_by = st.radio(
         "Colorear por:",
@@ -586,28 +624,49 @@ with tab_prod:
         st.warning("No hay datos de producción para los pads detectados.")
         st.stop()
 
-    # Selector: fluid type for ranking
-    fluid_sel = st.radio(
-        "Tipo de pozo dominante:", ["Petrolífero", "Gasífero", "Todos"],
-        horizontal=True,
-    )
-    top_n = st.slider("Top N pads:", min_value=5, max_value=30, value=15)
+    # ── Filtros de Tab 3 ──────────────────────────────────────────────────────
+    fc1, fc2, fc3 = st.columns([2, 2, 1])
 
+    with fc1:
+        fluid_sel = st.radio(
+            "Tipo de pozo dominante:", ["Petrolífero", "Gasífero", "Todos"],
+            horizontal=True,
+        )
+    with fc2:
+        all_areas_prod = sorted(pad_prod["area"].dropna().unique())
+        sel_areas_prod = st.multiselect(
+            "Filtrar por área:",
+            all_areas_prod,
+            default=[],
+            key="prod_area_filter",
+            help="Sin selección se muestran todas las áreas.",
+        )
+    with fc3:
+        top_n = st.slider("Top N pads:", min_value=5, max_value=30, value=15)
+
+    # Apply filters
+    pad_prod_f = pad_prod.copy()
     if fluid_sel != "Todos":
-        pad_prod_f = pad_prod[pad_prod["fluid"] == fluid_sel]
-    else:
-        pad_prod_f = pad_prod
+        pad_prod_f = pad_prod_f[pad_prod_f["fluid"] == fluid_sel]
+    if sel_areas_prod:
+        pad_prod_f = pad_prod_f[pad_prod_f["area"].isin(sel_areas_prod)]
+
+    if pad_prod_f.empty:
+        st.warning("No hay pads con datos para los filtros seleccionados.")
+        st.stop()
 
     # ── Bubble map: Pad productivity ──────────────────────────────────────────
     st.markdown("#### Mapa de Burbujas — Producción Acumulada por Pad")
 
     metric_bubble = st.selectbox(
         "Métrica de tamaño:",
-        ["total_oil_m3", "total_gas_km3", "n_wells"],
+        ["total_oil_m3", "total_gas_km3", "avg_peak_oil_rate", "avg_peak_gas_rate", "n_wells"],
         format_func=lambda c: {
-            "total_oil_m3":  "Petróleo Acumulado (m³)",
-            "total_gas_km3": "Gas Acumulado (km³)",
-            "n_wells":       "N° Pozos",
+            "total_oil_m3":       "Petróleo Acumulado (m³)",
+            "total_gas_km3":      "Gas Acumulado (km³)",
+            "avg_peak_oil_rate":  "Caudal Pico Prom. Petróleo (m³/d)",
+            "avg_peak_gas_rate":  "Caudal Pico Prom. Gas (km³/d)",
+            "n_wells":            "N° Pozos",
         }[c],
     )
 
@@ -624,11 +683,13 @@ with tab_prod:
         color_discrete_map=FLUID_COLORS,
         hover_name="pad_name",
         hover_data={
-            "n_wells":       True,
-            "empresa":       True,
-            "area":          True,
-            "total_oil_m3":  ":,.0f",
-            "total_gas_km3": ":,.1f",
+            "n_wells":            True,
+            "empresa":            True,
+            "area":               True,
+            "total_oil_m3":       ":,.0f",
+            "total_gas_km3":      ":,.1f",
+            "avg_peak_oil_rate":  ":,.1f",
+            "avg_peak_gas_rate":  ":,.1f",
             "lat": False, "lon": False,
         },
         scope="south america", height=580,
@@ -642,7 +703,7 @@ with tab_prod:
     )
     st.plotly_chart(fig_bubble_map, use_container_width=True)
 
-    # ── Ranking bar charts ────────────────────────────────────────────────────
+    # ── Ranking: Producción Acumulada ─────────────────────────────────────────
     st.markdown(f"#### Ranking Top {top_n} Pads — Producción Acumulada")
 
     col_oil, col_gas = st.columns(2)
@@ -655,7 +716,7 @@ with tab_prod:
             x="total_oil_m3", y="pad_name", orientation="h",
             color="empresa", text="total_oil_m3",
             labels={"total_oil_m3": "m³", "pad_name": "Pad", "empresa": "Empresa"},
-            height=420,
+            height=max(380, top_n * 28),
         )
         fig_r_oil.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
         fig_r_oil.update_layout(template="plotly_white", yaxis_title=None)
@@ -669,11 +730,117 @@ with tab_prod:
             x="total_gas_km3", y="pad_name", orientation="h",
             color="empresa", text="total_gas_km3",
             labels={"total_gas_km3": "km³", "pad_name": "Pad", "empresa": "Empresa"},
-            height=420,
+            height=max(380, top_n * 28),
         )
         fig_r_gas.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
         fig_r_gas.update_layout(template="plotly_white", yaxis_title=None)
         st.plotly_chart(fig_r_gas, use_container_width=True)
+
+    # ── Ranking: Caudal Pico Promedio por Pad ─────────────────────────────────
+    st.markdown(f"#### 💧 Ranking Top {top_n} Pads — Caudal Pico Promedio")
+    st.caption(
+        "Caudal pico promedio = suma del caudal pico individual de cada pozo del pad "
+        "dividido la cantidad de pozos. Refleja la productividad media de un pozo representativo."
+    )
+
+    col_qo, col_qg = st.columns(2)
+
+    with col_qo:
+        st.markdown("**⛽ Qo pico promedio (m³/d/pozo)**")
+        top_qo = pad_prod_f.nlargest(top_n, "avg_peak_oil_rate")
+        fig_qo = px.bar(
+            top_qo.sort_values("avg_peak_oil_rate"),
+            x="avg_peak_oil_rate", y="pad_name", orientation="h",
+            color="area",
+            text="avg_peak_oil_rate",
+            labels={
+                "avg_peak_oil_rate": "m³/d",
+                "pad_name":          "Pad",
+                "area":              "Área",
+            },
+            height=max(380, top_n * 28),
+            title="Ranking por Qo pico prom.",
+        )
+        fig_qo.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
+        fig_qo.update_layout(template="plotly_white", yaxis_title=None)
+        st.plotly_chart(fig_qo, use_container_width=True)
+
+    with col_qg:
+        st.markdown("**🔥 Qg pico promedio (km³/d/pozo)**")
+        top_qg = pad_prod_f.nlargest(top_n, "avg_peak_gas_rate")
+        fig_qg = px.bar(
+            top_qg.sort_values("avg_peak_gas_rate"),
+            x="avg_peak_gas_rate", y="pad_name", orientation="h",
+            color="area",
+            text="avg_peak_gas_rate",
+            labels={
+                "avg_peak_gas_rate": "km³/d",
+                "pad_name":          "Pad",
+                "area":              "Área",
+            },
+            height=max(380, top_n * 28),
+            title="Ranking por Qg pico prom.",
+        )
+        fig_qg.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
+        fig_qg.update_layout(template="plotly_white", yaxis_title=None)
+        st.plotly_chart(fig_qg, use_container_width=True)
+
+    # ── Scatter: caudal pico vs producción acumulada ──────────────────────────
+    st.markdown("#### Caudal Pico vs Producción Acumulada")
+    st.caption(
+        "Compara la tasa inicial (caudal pico prom.) con la producción acumulada total. "
+        "Pads en la esquina superior-derecha son los de mayor calidad de completación."
+    )
+
+    peak_fluid = st.radio(
+        "Fluido para los ejes:",
+        ["Petróleo", "Gas"],
+        horizontal=True,
+        key="peak_scatter_fluid",
+    )
+
+    if peak_fluid == "Petróleo":
+        x_col, y_col = "avg_peak_oil_rate", "total_oil_m3"
+        x_lbl, y_lbl = "Qo pico prom. (m³/d)", "Petróleo Acumulado (m³)"
+    else:
+        x_col, y_col = "avg_peak_gas_rate", "total_gas_km3"
+        x_lbl, y_lbl = "Qg pico prom. (km³/d)", "Gas Acumulado (km³)"
+
+    scatter_df = pad_prod_f.dropna(subset=[x_col, y_col])
+    if not scatter_df.empty:
+        fig_pk_scatter = px.scatter(
+            scatter_df,
+            x=x_col, y=y_col,
+            color="area",
+            size="n_wells", size_max=22,
+            hover_name="pad_name",
+            hover_data={
+                "empresa": True,
+                "area":    True,
+                "n_wells": True,
+                x_col:     ":,.1f",
+                y_col:     ":,.0f",
+            },
+            labels={x_col: x_lbl, y_col: y_lbl, "area": "Área"},
+            title=f"{x_lbl} vs {y_lbl}",
+            template="plotly_white",
+            height=480,
+        )
+        med_x_pk = scatter_df[x_col].median()
+        med_y_pk = scatter_df[y_col].median()
+        fig_pk_scatter.add_vline(
+            x=med_x_pk, line_dash="dash", line_color="grey",
+            annotation_text=f"P50 caudal ({med_x_pk:,.1f})",
+            annotation_position="top right",
+            annotation_font=dict(size=9),
+        )
+        fig_pk_scatter.add_hline(
+            y=med_y_pk, line_dash="dash", line_color="grey",
+            annotation_text="P50 acumulado",
+            annotation_position="top left",
+            annotation_font=dict(size=9),
+        )
+        st.plotly_chart(fig_pk_scatter, use_container_width=True)
 
     # ── Scatter: wells vs production ──────────────────────────────────────────
     st.markdown("#### Eficiencia: Pozos vs Producción Acumulada")
@@ -723,25 +890,25 @@ with tab_prod:
 
     display_df = (
         pad_prod_f
-        .sort_values("total_oil_m3", ascending=False)
+        .sort_values("avg_peak_oil_rate", ascending=False)
         .rename(columns={
-            "pad_name":      "Pad",
-            "n_wells":       "Pozos",
-            "total_oil_m3":  "Petróleo (m³)",
-            "total_gas_km3": "Gas (km³)",
-            "total_water_m3":"Agua (m³)",
-            "peak_oil_rate": "Q pico petróleo (m³/d)",
-            "peak_gas_rate": "Q pico gas (km³/d)",
-            "empresa":       "Empresa dominante",
-            "area":          "Área",
-            "fluid":         "Fluido",
+            "pad_name":           "Pad",
+            "n_wells":            "Pozos",
+            "total_oil_m3":       "Petróleo (m³)",
+            "total_gas_km3":      "Gas (km³)",
+            "total_water_m3":     "Agua (m³)",
+            "avg_peak_oil_rate":  "Qo pico prom. (m³/d)",
+            "avg_peak_gas_rate":  "Qg pico prom. (km³/d)",
+            "empresa":            "Empresa dominante",
+            "area":               "Área",
+            "fluid":              "Fluido",
         })
         .reset_index(drop=True)
     )
     for col in ["Petróleo (m³)", "Agua (m³)"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].map("{:,.0f}".format)
-    for col in ["Gas (km³)", "Q pico petróleo (m³/d)", "Q pico gas (km³/d)"]:
+    for col in ["Gas (km³)", "Qo pico prom. (m³/d)", "Qg pico prom. (km³/d)"]:
         if col in display_df.columns:
             display_df[col] = display_df[col].map("{:,.1f}".format)
 
@@ -778,18 +945,18 @@ with tab_export:
         pad_exp = build_pad_production(
             data_sorted[data_sorted["tef"] > 0], df_pads
         ).rename(columns={
-            "pad_name":      "Pad",
-            "n_wells":       "Pozos",
-            "total_oil_m3":  "Petróleo_m3",
-            "total_gas_km3": "Gas_km3",
-            "total_water_m3":"Agua_m3",
-            "peak_oil_rate": "Qo_pico_m3d",
-            "peak_gas_rate": "Qg_pico_km3d",
-            "empresa":       "Empresa_dominante",
-            "area":          "Area",
-            "fluid":         "Fluido_dominante",
-            "lat":           "Lat",
-            "lon":           "Lon",
+            "pad_name":           "Pad",
+            "n_wells":            "Pozos",
+            "total_oil_m3":       "Petroleo_m3",
+            "total_gas_km3":      "Gas_km3",
+            "total_water_m3":     "Agua_m3",
+            "avg_peak_oil_rate":  "Qo_pico_prom_m3d",
+            "avg_peak_gas_rate":  "Qg_pico_prom_km3d",
+            "empresa":            "Empresa_dominante",
+            "area":               "Area",
+            "fluid":              "Fluido_dominante",
+            "lat":                "Lat",
+            "lon":                "Lon",
         })
 
         st.download_button(
