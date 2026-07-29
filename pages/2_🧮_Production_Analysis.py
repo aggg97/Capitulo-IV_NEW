@@ -144,9 +144,10 @@ def assign_start_year(df: pd.DataFrame) -> pd.DataFrame:
         df[df[["oil_rate", "gas_rate"]].max(axis=1) > 0]
         .groupby("sigla")["anio"]
         .min()
+        .rename("start_year")
+        .reset_index()
     )
-    df["start_year"] = df["sigla"].map(start)
-    return df
+    return df.merge(start, on="sigla", how="left")
 
 area_data = company_data[company_data["areayacimiento"] == selected_area]
 
@@ -169,18 +170,19 @@ def add_time_zero(df: pd.DataFrame) -> pd.DataFrame:
     """
     Adds 'month_number' column counting from the first month where any
     production (oil or gas) > 0. Month 1 = first producing month.
-    Uses map instead of merge to avoid column collision on repeated calls.
     """
     df = df.copy()
-    # Drop any leftover column from a previous call
+    # Drop columns from any previous call to avoid merge suffix collisions
     df.drop(columns=["first_prod_date", "month_number"], errors="ignore", inplace=True)
 
     first_prod = (
         df[df[["oil_rate", "gas_rate"]].max(axis=1) > 0]
         .groupby("sigla")["date"]
         .min()
+        .rename("first_prod_date")
+        .reset_index()          # → DataFrame con columnas [sigla, first_prod_date]
     )
-    df["first_prod_date"] = df["sigla"].map(first_prod)
+    df = df.merge(first_prod, on="sigla", how="left")
     df["month_number"] = (
         (df["date"].dt.year  - df["first_prod_date"].dt.year) * 12 +
         (df["date"].dt.month - df["first_prod_date"].dt.month) + 1
