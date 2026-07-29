@@ -655,8 +655,8 @@ with tab_prod:
         st.warning("No hay pads con datos para los filtros seleccionados.")
         st.stop()
 
-    # ── Bubble map: Pad productivity ──────────────────────────────────────────
-    st.markdown("#### Mapa de Burbujas — Producción Acumulada por Pad")
+    # ── Mapa 1: burbujas coloreadas por ÁREA ─────────────────────────────────
+    st.markdown("#### Mapa de Burbujas — Producción Acumulada por Pad (color por Área)")
 
     metric_bubble = st.selectbox(
         "Métrica de tamaño:",
@@ -679,8 +679,7 @@ with tab_prod:
         bubble_map_df,
         lat="lat", lon="lon",
         size=metric_bubble,
-        color="fluid",
-        color_discrete_map=FLUID_COLORS,
+        color="area",                          # ← color por área
         hover_name="pad_name",
         hover_data={
             "n_wells":            True,
@@ -694,47 +693,156 @@ with tab_prod:
         },
         scope="south america", height=580,
         size_max=35,
-        title="Producción Acumulada por Pad",
+        title="Producción Acumulada por Pad — color por Área",
     )
     configure_geo_map(fig_bubble_map)
     fig_bubble_map.update_layout(
         margin=dict(l=0, r=0, t=40, b=0),
-        legend_title="Fluido",
+        legend_title="Área",
     )
     st.plotly_chart(fig_bubble_map, use_container_width=True)
+
+    # ── Mapa 2: cut-off — pads destacados vs grises ───────────────────────────
+    st.markdown("#### Mapa de Cut-off — Pads que superan un umbral")
+    st.caption(
+        "Los pads en color superan el umbral ingresado en la métrica seleccionada. "
+        "Los demás aparecen en gris claro."
+    )
+
+    cutoff_col_options = {
+        "Petróleo Acumulado (m³)":          "total_oil_m3",
+        "Gas Acumulado (km³)":              "total_gas_km3",
+        "Qo pico prom. (m³/d/pozo)":        "avg_peak_oil_rate",
+        "Qg pico prom. (km³/d/pozo)":       "avg_peak_gas_rate",
+    }
+    co1, co2 = st.columns([2, 1])
+    with co1:
+        cutoff_metric_lbl = st.selectbox(
+            "Métrica para el cut-off:",
+            list(cutoff_col_options.keys()),
+            key="cutoff_metric",
+        )
+    cutoff_metric_col = cutoff_col_options[cutoff_metric_lbl]
+
+    valid_vals = bubble_map_df[cutoff_metric_col].dropna()
+    default_cutoff = float(valid_vals.quantile(0.75)) if not valid_vals.empty else 0.0
+
+    with co2:
+        cutoff_value = st.number_input(
+            f"Umbral mínimo ({cutoff_metric_lbl}):",
+            min_value=0.0,
+            value=round(default_cutoff, 1),
+            step=max(1.0, round(default_cutoff * 0.05, 1)),
+            format="%.1f",
+            key="cutoff_value",
+        )
+
+    # Separar pads que superan y no superan el umbral
+    above_df = bubble_map_df[bubble_map_df[cutoff_metric_col] >= cutoff_value]
+    below_df = bubble_map_df[bubble_map_df[cutoff_metric_col] <  cutoff_value]
+
+    fig_cutoff = go.Figure()
+
+    # Pads por debajo: marcadores grises sin leyenda por pad
+    if not below_df.empty:
+        fig_cutoff.add_trace(go.Scattergeo(
+            lat=below_df["lat"],
+            lon=below_df["lon"],
+            mode="markers",
+            marker=dict(size=6, color="lightgrey", opacity=0.55),
+            name="Bajo umbral",
+            text=below_df["pad_name"],
+            customdata=below_df[["n_wells", "empresa", "area",
+                                  cutoff_metric_col]].values,
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "N° pozos: %{customdata[0]}<br>"
+                "Empresa: %{customdata[1]}<br>"
+                "Área: %{customdata[2]}<br>"
+                f"{cutoff_metric_lbl}: %{{customdata[3]:,.1f}}<extra>Bajo umbral</extra>"
+            ),
+        ))
+
+    # Pads por encima: un trace por área para tener leyenda de colores por área
+    if not above_df.empty:
+        area_palette = px.colors.qualitative.Bold + px.colors.qualitative.Pastel
+        for i, area_val in enumerate(sorted(above_df["area"].unique())):
+            sub = above_df[above_df["area"] == area_val]
+            fig_cutoff.add_trace(go.Scattergeo(
+                lat=sub["lat"],
+                lon=sub["lon"],
+                mode="markers",
+                marker=dict(
+                    size=10,
+                    color=area_palette[i % len(area_palette)],
+                    opacity=0.9,
+                    line=dict(width=0.5, color="white"),
+                ),
+                name=area_val,
+                text=sub["pad_name"],
+                customdata=sub[["n_wells", "empresa",
+                                 cutoff_metric_col]].values,
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "N° pozos: %{customdata[0]}<br>"
+                    "Empresa: %{customdata[1]}<br>"
+                    f"{cutoff_metric_lbl}: %{{customdata[2]:,.1f}}<extra>{area_val}</extra>"
+                ),
+            ))
+
+    configure_geo_map(fig_cutoff)
+    fig_cutoff.update_layout(
+        title=f"Pads con {cutoff_metric_lbl} ≥ {cutoff_value:,.1f} — {len(above_df)} pads destacados",
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend_title="Área (sobre umbral)",
+        height=560,
+    )
+    st.plotly_chart(fig_cutoff, use_container_width=True)
+    st.caption(
+        f"**{len(above_df)}** pads superan el umbral · "
+        f"**{len(below_df)}** pads en gris (bajo umbral)"
+    )
 
     # ── Ranking: Producción Acumulada ─────────────────────────────────────────
     st.markdown(f"#### Ranking Top {top_n} Pads — Producción Acumulada")
 
-    col_oil, col_gas = st.columns(2)
+    # Petróleo
+    st.markdown("**⛽ Petróleo Acumulado (m³)**")
+    top_oil = pad_prod_f.nlargest(top_n, "total_oil_m3")
+    fig_r_oil = px.bar(
+        top_oil.sort_values("total_oil_m3"),
+        x="total_oil_m3", y="pad_name", orientation="h",
+        color="empresa", text="total_oil_m3",
+        labels={"total_oil_m3": "m³", "pad_name": "Pad", "empresa": "Empresa"},
+        height=max(380, top_n * 28),
+        custom_data=["n_wells"],
+    )
+    fig_r_oil.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="inside",
+        hovertemplate="<b>%{y}</b><br>Petróleo: %{x:,.0f} m³<br>N° pozos: %{customdata[0]}<extra></extra>",
+    )
+    fig_r_oil.update_layout(template="plotly_white", yaxis_title=None)
+    st.plotly_chart(fig_r_oil, use_container_width=True)
 
-    with col_oil:
-        st.markdown("**⛽ Petróleo Acumulado (m³)**")
-        top_oil = pad_prod_f.nlargest(top_n, "total_oil_m3")
-        fig_r_oil = px.bar(
-            top_oil.sort_values("total_oil_m3"),
-            x="total_oil_m3", y="pad_name", orientation="h",
-            color="empresa", text="total_oil_m3",
-            labels={"total_oil_m3": "m³", "pad_name": "Pad", "empresa": "Empresa"},
-            height=max(380, top_n * 28),
-        )
-        fig_r_oil.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
-        fig_r_oil.update_layout(template="plotly_white", yaxis_title=None)
-        st.plotly_chart(fig_r_oil, use_container_width=True)
-
-    with col_gas:
-        st.markdown("**🔥 Gas Acumulado (km³)**")
-        top_gas = pad_prod_f.nlargest(top_n, "total_gas_km3")
-        fig_r_gas = px.bar(
-            top_gas.sort_values("total_gas_km3"),
-            x="total_gas_km3", y="pad_name", orientation="h",
-            color="empresa", text="total_gas_km3",
-            labels={"total_gas_km3": "km³", "pad_name": "Pad", "empresa": "Empresa"},
-            height=max(380, top_n * 28),
-        )
-        fig_r_gas.update_traces(texttemplate="%{text:,.0f}", textposition="inside")
-        fig_r_gas.update_layout(template="plotly_white", yaxis_title=None)
-        st.plotly_chart(fig_r_gas, use_container_width=True)
+    # Gas
+    st.markdown("**🔥 Gas Acumulado (km³)**")
+    top_gas = pad_prod_f.nlargest(top_n, "total_gas_km3")
+    fig_r_gas = px.bar(
+        top_gas.sort_values("total_gas_km3"),
+        x="total_gas_km3", y="pad_name", orientation="h",
+        color="empresa", text="total_gas_km3",
+        labels={"total_gas_km3": "km³", "pad_name": "Pad", "empresa": "Empresa"},
+        height=max(380, top_n * 28),
+        custom_data=["n_wells"],
+    )
+    fig_r_gas.update_traces(
+        texttemplate="%{text:,.0f}",
+        textposition="inside",
+        hovertemplate="<b>%{y}</b><br>Gas: %{x:,.0f} km³<br>N° pozos: %{customdata[0]}<extra></extra>",
+    )
+    fig_r_gas.update_layout(template="plotly_white", yaxis_title=None)
+    st.plotly_chart(fig_r_gas, use_container_width=True)
 
     # ── Ranking: Caudal Pico Promedio por Pad ─────────────────────────────────
     st.markdown(f"#### 💧 Ranking Top {top_n} Pads — Caudal Pico Promedio")
@@ -743,47 +851,45 @@ with tab_prod:
         "dividido la cantidad de pozos. Refleja la productividad media de un pozo representativo."
     )
 
-    col_qo, col_qg = st.columns(2)
+    # Qo
+    st.markdown("**⛽ Qo pico promedio (m³/d/pozo)**")
+    top_qo = pad_prod_f.nlargest(top_n, "avg_peak_oil_rate")
+    fig_qo = px.bar(
+        top_qo.sort_values("avg_peak_oil_rate"),
+        x="avg_peak_oil_rate", y="pad_name", orientation="h",
+        color="area", text="avg_peak_oil_rate",
+        labels={"avg_peak_oil_rate": "m³/d", "pad_name": "Pad", "area": "Área"},
+        height=max(380, top_n * 28),
+        title="Ranking por Qo pico prom.",
+        custom_data=["n_wells"],
+    )
+    fig_qo.update_traces(
+        texttemplate="%{text:,.1f}",
+        textposition="inside",
+        hovertemplate="<b>%{y}</b><br>Qo pico prom.: %{x:,.1f} m³/d<br>N° pozos: %{customdata[0]}<extra></extra>",
+    )
+    fig_qo.update_layout(template="plotly_white", yaxis_title=None)
+    st.plotly_chart(fig_qo, use_container_width=True)
 
-    with col_qo:
-        st.markdown("**⛽ Qo pico promedio (m³/d/pozo)**")
-        top_qo = pad_prod_f.nlargest(top_n, "avg_peak_oil_rate")
-        fig_qo = px.bar(
-            top_qo.sort_values("avg_peak_oil_rate"),
-            x="avg_peak_oil_rate", y="pad_name", orientation="h",
-            color="area",
-            text="avg_peak_oil_rate",
-            labels={
-                "avg_peak_oil_rate": "m³/d",
-                "pad_name":          "Pad",
-                "area":              "Área",
-            },
-            height=max(380, top_n * 28),
-            title="Ranking por Qo pico prom.",
-        )
-        fig_qo.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
-        fig_qo.update_layout(template="plotly_white", yaxis_title=None)
-        st.plotly_chart(fig_qo, use_container_width=True)
-
-    with col_qg:
-        st.markdown("**🔥 Qg pico promedio (km³/d/pozo)**")
-        top_qg = pad_prod_f.nlargest(top_n, "avg_peak_gas_rate")
-        fig_qg = px.bar(
-            top_qg.sort_values("avg_peak_gas_rate"),
-            x="avg_peak_gas_rate", y="pad_name", orientation="h",
-            color="area",
-            text="avg_peak_gas_rate",
-            labels={
-                "avg_peak_gas_rate": "km³/d",
-                "pad_name":          "Pad",
-                "area":              "Área",
-            },
-            height=max(380, top_n * 28),
-            title="Ranking por Qg pico prom.",
-        )
-        fig_qg.update_traces(texttemplate="%{text:,.1f}", textposition="inside")
-        fig_qg.update_layout(template="plotly_white", yaxis_title=None)
-        st.plotly_chart(fig_qg, use_container_width=True)
+    # Qg
+    st.markdown("**🔥 Qg pico promedio (km³/d/pozo)**")
+    top_qg = pad_prod_f.nlargest(top_n, "avg_peak_gas_rate")
+    fig_qg = px.bar(
+        top_qg.sort_values("avg_peak_gas_rate"),
+        x="avg_peak_gas_rate", y="pad_name", orientation="h",
+        color="area", text="avg_peak_gas_rate",
+        labels={"avg_peak_gas_rate": "km³/d", "pad_name": "Pad", "area": "Área"},
+        height=max(380, top_n * 28),
+        title="Ranking por Qg pico prom.",
+        custom_data=["n_wells"],
+    )
+    fig_qg.update_traces(
+        texttemplate="%{text:,.1f}",
+        textposition="inside",
+        hovertemplate="<b>%{y}</b><br>Qg pico prom.: %{x:,.1f} km³/d<br>N° pozos: %{customdata[0]}<extra></extra>",
+    )
+    fig_qg.update_layout(template="plotly_white", yaxis_title=None)
+    st.plotly_chart(fig_qg, use_container_width=True)
 
     # ── Scatter: caudal pico vs producción acumulada ──────────────────────────
     st.markdown("#### Caudal Pico vs Producción Acumulada")
@@ -792,12 +898,23 @@ with tab_prod:
         "Pads en la esquina superior-derecha son los de mayor calidad de completación."
     )
 
-    peak_fluid = st.radio(
-        "Fluido para los ejes:",
-        ["Petróleo", "Gas"],
-        horizontal=True,
-        key="peak_scatter_fluid",
-    )
+    sc1, sc2 = st.columns([1, 2])
+    with sc1:
+        peak_fluid = st.radio(
+            "Fluido:",
+            ["Petróleo", "Gas"],
+            horizontal=True,
+            key="peak_scatter_fluid",
+        )
+    with sc2:
+        all_areas_scatter = sorted(pad_prod_f["area"].dropna().unique())
+        sel_areas_scatter = st.multiselect(
+            "Filtrar áreas en el scatter:",
+            all_areas_scatter,
+            default=[],
+            key="scatter_area_filter",
+            help="Sin selección se muestran todas.",
+        )
 
     if peak_fluid == "Petróleo":
         x_col, y_col = "avg_peak_oil_rate", "total_oil_m3"
@@ -807,6 +924,9 @@ with tab_prod:
         x_lbl, y_lbl = "Qg pico prom. (km³/d)", "Gas Acumulado (km³)"
 
     scatter_df = pad_prod_f.dropna(subset=[x_col, y_col])
+    if sel_areas_scatter:
+        scatter_df = scatter_df[scatter_df["area"].isin(sel_areas_scatter)]
+
     if not scatter_df.empty:
         fig_pk_scatter = px.scatter(
             scatter_df,
@@ -824,7 +944,7 @@ with tab_prod:
             labels={x_col: x_lbl, y_col: y_lbl, "area": "Área"},
             title=f"{x_lbl} vs {y_lbl}",
             template="plotly_white",
-            height=480,
+            height=500,
         )
         med_x_pk = scatter_df[x_col].median()
         med_y_pk = scatter_df[y_col].median()
@@ -841,49 +961,8 @@ with tab_prod:
             annotation_font=dict(size=9),
         )
         st.plotly_chart(fig_pk_scatter, use_container_width=True)
-
-    # ── Scatter: wells vs production ──────────────────────────────────────────
-    st.markdown("#### Eficiencia: Pozos vs Producción Acumulada")
-    st.caption(
-        "Pads en la esquina superior-izquierda logran alta producción con pocos pozos "
-        "— candidatos a benchmark de completación."
-    )
-
-    metric_y = st.radio(
-        "Eje Y:", ["total_oil_m3", "total_gas_km3"],
-        format_func=lambda c: "Petróleo (m³)" if c == "total_oil_m3" else "Gas (km³)",
-        horizontal=True, key="eff_y",
-    )
-
-    fig_eff = px.scatter(
-        pad_prod_f,
-        x="n_wells", y=metric_y,
-        color="empresa", size="n_wells", size_max=22,
-        hover_name="pad_name",
-        hover_data={"empresa": True, "area": True, "fluid": True},
-        labels={
-            "n_wells":       "N° Pozos en el Pad",
-            "total_oil_m3":  "Petróleo Acumulado (m³)",
-            "total_gas_km3": "Gas Acumulado (km³)",
-            "empresa":       "Empresa",
-        },
-        title="Pozos por Pad vs Producción Acumulada",
-        template="plotly_white",
-        height=480,
-    )
-
-    # Reference lines at medians
-    med_x = pad_prod_f["n_wells"].median()
-    med_y = pad_prod_f[metric_y].median()
-    fig_eff.add_vline(x=med_x, line_dash="dash", line_color="grey",
-                      annotation_text=f"P50 pozos ({med_x:.0f})",
-                      annotation_position="top right",
-                      annotation_font=dict(size=9))
-    fig_eff.add_hline(y=med_y, line_dash="dash", line_color="grey",
-                      annotation_text="P50 producción",
-                      annotation_position="top left",
-                      annotation_font=dict(size=9))
-    st.plotly_chart(fig_eff, use_container_width=True)
+    else:
+        st.info("No hay datos con los filtros seleccionados.")
 
     # ── Summary table ──────────────────────────────────────────────────────────
     st.markdown("#### Tabla Resumen por Pad")
