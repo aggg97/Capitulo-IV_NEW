@@ -397,4 +397,168 @@ with tab3:
         )
         st.divider()
 
-       
+    # ══════════════════════════════════════════════════════════════════════════
+    # ANÁLISIS POR ÁREA — mismo set de gráficos con filtro multiselect
+    # ══════════════════════════════════════════════════════════════════════════
+
+    st.divider()
+    st.subheader("🗺️ Análisis de Productividad por Área", divider="blue")
+    st.caption(
+        "Repetición del análisis anterior filtrado por una o más áreas de yacimiento. "
+        "Podés comparar el P50 de múltiples áreas en el mismo gráfico activando "
+        "'Superponer áreas en el mismo gráfico'."
+    )
+
+    # Áreas disponibles en el dataset de fractura
+    all_prod_areas = sorted(df_vmut["areayacimiento"].dropna().unique())
+
+    sel_prod_areas = st.multiselect(
+        "Seleccionar áreas de yacimiento:",
+        options=all_prod_areas,
+        default=[],
+        key="prod_area_multiselect",
+        help="Sin selección no se muestra este análisis.",
+    )
+
+    if not sel_prod_areas:
+        st.info("Seleccioná al menos un área para activar el análisis por área.")
+    else:
+        selected_productivity_area = st.multiselect(
+            "Indicadores a visualizar (por área):",
+            options=list(PRODUCTIVITY_CHARTS.keys()),
+            default=list(PRODUCTIVITY_CHARTS.keys())[:2],
+            key="productivity_area_charts",
+        )
+
+        split_area = st.checkbox(
+            "Separar por tipo de fluido",
+            key="split_productivity_area",
+        )
+
+        overlay_areas = st.checkbox(
+            "Superponer áreas en el mismo gráfico (P50 por área)",
+            value=False,
+            key="overlay_areas",
+            help=(
+                "Activado: un gráfico con una línea P50 por área. "
+                "Desactivado: un gráfico separado por área."
+            ),
+        )
+
+        # Definición de métricas base (sin filtro de área, lo aplicamos abajo)
+        PROD_METRICS = {
+            "Qo Pico":         ("Qo_peak",         "Caudal de Petróleo (m3/d)",      "Petrolífero"),
+            "Qg Pico":         ("Qg_peak",          "Caudal de Gas (km3/d)",          "Gasífero"),
+            "Qo Pico x Etapa": ("Qo_peak_x_etapa",  "Caudal de Petróleo (m3/d/etapa)","Petrolífero"),
+            "Qg Pico x Etapa": ("Qg_peak_x_etapa",  "Caudal de Gas (km3/d/etapa)",    "Gasífero"),
+        }
+
+        AREA_PALETTE = px.colors.qualitative.Bold + px.colors.qualitative.Pastel
+
+        for chart_name in selected_productivity_area:
+            metric_col, y_label, fluid_type = PROD_METRICS[chart_name]
+
+            # Filtro base: tipo de pozo + año mínimo según métrica
+            base_mask = df_vmut["tipopozoNEW"] == fluid_type
+            if "x Etapa" in chart_name:
+                base_mask &= df_vmut["start_year"] > 2012
+
+            if overlay_areas:
+                # ── Un gráfico con P50 por área ───────────────────────────────
+                fig_overlay = go.Figure()
+
+                for i, area in enumerate(sel_prod_areas):
+                    df_area = df_vmut[
+                        base_mask &
+                        (df_vmut["areayacimiento"] == area)
+                    ].dropna(subset=[metric_col, "start_year"])
+
+                    if df_area.empty:
+                        continue
+
+                    stats = (
+                        df_area.groupby("start_year")[metric_col]
+                        .agg(
+                            p10=lambda x: x.quantile(0.90),
+                            p50="median",
+                            p90=lambda x: x.quantile(0.10),
+                        )
+                        .reset_index()
+                        .dropna(subset=["p50"])
+                    )
+                    if stats.empty:
+                        continue
+
+                    color = AREA_PALETTE[i % len(AREA_PALETTE)]
+
+                    # Banda P10-P90
+                    fig_overlay.add_trace(go.Scatter(
+                        x=pd.concat([stats["start_year"], stats["start_year"][::-1]]),
+                        y=pd.concat([stats["p10"], stats["p90"][::-1]]),
+                        fill="toself",
+                        fillcolor=color,
+                        opacity=0.10,
+                        line=dict(color="rgba(0,0,0,0)"),
+                        showlegend=False,
+                        hoverinfo="skip",
+                        name=f"Banda {area}",
+                    ))
+
+                    # P50 por área
+                    fig_overlay.add_trace(go.Scatter(
+                        x=stats["start_year"],
+                        y=stats["p50"],
+                        mode="lines+markers",
+                        name=area,
+                        line=dict(color=color, width=2.5),
+                        marker=dict(size=7),
+                        hovertemplate=(
+                            f"<b>{area}</b><br>"
+                            "Campaña: %{x}<br>"
+                            f"P50: %{{y:.0f}}<extra></extra>"
+                        ),
+                    ))
+                    # Anotaciones P50
+                    for _, row in stats.iterrows():
+                        fig_overlay.add_annotation(
+                            x=row["start_year"], y=row["p50"],
+                            text=f"{row['p50']:.0f}",
+                            showarrow=False, yshift=12,
+                            font=dict(color=color, size=9),
+                        )
+
+                fig_overlay.update_layout(
+                    title=f"{chart_name} — P50 por Área (superposición)",
+                    xaxis_title=X_AXIS_LABEL,
+                    yaxis_title=y_label,
+                    template="plotly_white",
+                    legend=LEGEND_BOTTOM,
+                    height=480,
+                )
+                st.plotly_chart(fig_overlay, use_container_width=True)
+
+            else:
+                # ── Un gráfico por área ───────────────────────────────────────
+                for area in sel_prod_areas:
+                    df_area = df_vmut[
+                        base_mask &
+                        (df_vmut["areayacimiento"] == area)
+                    ].dropna(subset=[metric_col])
+
+                    if df_area.empty:
+                        st.caption(f"Sin datos para {area} — {chart_name}")
+                        continue
+
+                    st.plotly_chart(
+                        build_evolution_chart(
+                            df_area,
+                            metric_col,
+                            f"{chart_name} — {area}",
+                            y_label,
+                            split_by_fluid=split_area,
+                            invert_percentiles=True,
+                        ),
+                        use_container_width=True,
+                    )
+
+            st.divider()
