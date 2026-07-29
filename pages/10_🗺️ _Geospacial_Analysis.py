@@ -34,7 +34,7 @@ PAD_BUFFER_M = 30
 DEG_PER_METRE_LAT = 1 / 111_320
 DEG_PER_METRE_LON = 1 / (111_320 * np.cos(np.radians(38)))
 
-MAPBOX_STYLE = "carto-positron"
+map_STYLE = "carto-positron"
 
 FLUID_COLORS = {
     "Petrolífero": "#2ecc71",
@@ -337,7 +337,7 @@ with tab_map:
         "Pad":            "pad_name",
     }[color_by]
 
-    fig_map = px.scatter_mapbox(
+    fig_map = px.scatter_map(
         wells_map,
         lat="lat",
         lon="lon",
@@ -352,7 +352,7 @@ with tab_map:
         },
         zoom=8,
         height=620,
-        mapbox_style=MAPBOX_STYLE,
+        map_style=map_STYLE,
         title="Mapa de Pozos — Vaca Muerta",
     )
     fig_map.update_traces(marker=dict(size=6, opacity=0.80))
@@ -420,7 +420,7 @@ with tab_pads:
 
     pad_map_df = df_pads.rename(columns={"x": "lon", "y": "lat"})
 
-    fig_pads = px.scatter_mapbox(
+    fig_pads = px.scatter_map(
         pad_map_df,
         lat="lat",
         lon="lon",
@@ -435,7 +435,7 @@ with tab_pads:
         },
         zoom=8,
         height=580,
-        mapbox_style=MAPBOX_STYLE,
+        map_style=map_STYLE,
         title="Agrupación de Pozos por Pad (buffer 30 m)",
     )
     fig_pads.update_traces(marker=dict(size=7, opacity=0.85))
@@ -533,7 +533,7 @@ with tab_prod:
         }[c],
     )
 
-    fig_bubble_map = px.scatter_mapbox(
+    fig_bubble_map = px.scatter_map(
         pad_prod_f.dropna(subset=["lat", "lon"]),
         lat="lat", lon="lon",
         size=metric_bubble,
@@ -549,7 +549,7 @@ with tab_prod:
             "lat": False, "lon": False,
         },
         zoom=8, height=580,
-        mapbox_style=MAPBOX_STYLE,
+        map_style=map_STYLE,
         size_max=35,
         title="Producción Acumulada por Pad",
     )
