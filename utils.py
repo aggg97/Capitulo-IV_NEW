@@ -227,4 +227,11 @@ def create_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             agg[col] = (col, "first")
 
-    return df.groupby("sigla").agg(**agg).reset_index()
+    result = df.groupby("sigla").agg(**agg).reset_index()
+
+    # Descartar pozos sin producción real (caudal pico cero en ambos fluidos)
+    result = result[
+        (result["Qo_peak"] > 0) | (result["Qg_peak"] > 0)
+    ].reset_index(drop=True)
+
+    return result

@@ -120,24 +120,24 @@ year_color_map = {yr: YEAR_PALETTE[i % len(YEAR_PALETTE)] for i, yr in enumerate
 
 # Top-10 por año: tomamos los 10 mejores pozos de cada año seleccionado
 def get_top_wells_multi_year(df_area: pd.DataFrame, rate_col: str, years: list, top_n: int = 10) -> list:
-    """Devuelve la unión de los top_n pozos de cada año, por peak rate en ese año."""
+    """Devuelve la unión de los top_n pozos de cada año, por peak rate en ese año.
+    Excluye pozos con caudal pico = 0 en esa métrica."""
     wells = set()
     for yr in years:
-        yr_data = df_area[df_area["anio"] == yr]
+        yr_data = df_area[(df_area["anio"] == yr) & (df_area[rate_col] > 0)]
         top = yr_data.sort_values(rate_col, ascending=False).head(top_n)["sigla"].unique()
         wells.update(top)
     return list(wells)
 
-area_data = company_data[company_data["areayacimiento"] == selected_area]
+def get_all_new_wells(df_area: pd.DataFrame, years: list) -> list:
+    """Todos los pozos que iniciaron en los años seleccionados con al menos
+    un mes con producción real (excluye pozos con caudal pico = 0)."""
+    df_prod = df_area[df_area[["oil_rate", "gas_rate"]].max(axis=1) > 0]
+    start_yr = df_prod.groupby("sigla")["anio"].min()
+    return start_yr[start_yr.isin(years)].index.tolist()
 
-top_oil_wells = get_top_wells_multi_year(area_data, "oil_rate", selected_years)
-top_gas_wells = get_top_wells_multi_year(area_data, "gas_rate", selected_years)
-
-top_10_oil_data = company_data[company_data["sigla"].isin(top_oil_wells)].copy()
-top_10_gas_data = company_data[company_data["sigla"].isin(top_gas_wells)].copy()
-
-# Asignar el año de inicio de cada pozo (primer año con producción > 0) para colorear
 def assign_start_year(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega columna start_year: primer año con producción > 0 por pozo."""
     start = (
         df[df[["oil_rate", "gas_rate"]].max(axis=1) > 0]
         .groupby("sigla")["anio"]
@@ -146,8 +146,19 @@ def assign_start_year(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df.merge(start, on="sigla", how="left")
 
-top_10_oil_data = assign_start_year(top_10_oil_data)
-top_10_gas_data = assign_start_year(top_10_gas_data)
+area_data = company_data[company_data["areayacimiento"] == selected_area]
+
+top_oil_wells = get_top_wells_multi_year(area_data, "oil_rate", selected_years)
+top_gas_wells = get_top_wells_multi_year(area_data, "gas_rate", selected_years)
+
+all_new_oil_wells = get_all_new_wells(area_data, selected_years)
+all_new_gas_wells = all_new_oil_wells  # mismo conjunto base, filtro por fluido en el gráfico
+
+top_10_oil_data = assign_start_year(company_data[company_data["sigla"].isin(top_oil_wells)].copy())
+top_10_gas_data = assign_start_year(company_data[company_data["sigla"].isin(top_gas_wells)].copy())
+
+all_oil_data = assign_start_year(company_data[company_data["sigla"].isin(all_new_oil_wells)].copy())
+all_gas_data = assign_start_year(company_data[company_data["sigla"].isin(all_new_gas_wells)].copy())
 
 
 # ── Time-zero normalisation ───────────────────────────────────────────────────
@@ -206,28 +217,50 @@ def robust_yaxis_range(series: pd.Series, margin: float = 0.10) -> list:
 
 def build_top10_chart(
     well_data: pd.DataFrame,
-    wells: list,
+    highlight_wells: list,
     y_col: str,
     y_label: str,
     title: str,
     use_time_zero: bool,
+    all_well_data: pd.DataFrame | None = None,
 ) -> go.Figure:
     """
-    Gráfico de perfiles de producción para los pozos indicados.
-    Cada pozo se colorea según su año de inicio, usando year_color_map.
-    Pozos del mismo año comparten color pero cada línea tiene su propio nombre.
+    Gráfico de perfiles de producción.
+    - all_well_data: todos los pozos nuevos del período → se dibujan en gris claro (fondo)
+    - highlight_wells + well_data: los top 10 → se dibujan en color por año de inicio
     """
-    fig     = go.Figure()
-    x_col   = "month_number" if use_time_zero else "date"
+    fig   = go.Figure()
+    x_col = "month_number" if use_time_zero else "date"
     x_label = "Mes de Producción" if use_time_zero else "Fecha"
 
-    # Agrupar por año para leyenda coherente
-    year_shown = set()   # para no duplicar entradas de leyenda por año
-    for well in wells:
+    # ── Fondo gris: todos los pozos nuevos que NO son top ─────────────────────
+    if all_well_data is not None and not all_well_data.empty:
+        non_top = [w for w in all_well_data["sigla"].unique() if w not in set(highlight_wells)]
+        grey_shown = False
+        for well in non_top:
+            wd = all_well_data[all_well_data["sigla"] == well].sort_values(x_col)
+            if wd.empty or wd[y_col].max() == 0:
+                continue
+            fig.add_trace(go.Scatter(
+                x=wd[x_col],
+                y=wd[y_col],
+                mode="lines",
+                name="Otros pozos nuevos",
+                legendgroup="grey_bg",
+                showlegend=not grey_shown,
+                line=dict(color="lightgrey", width=1),
+                opacity=0.55,
+                hovertemplate=f"<b>{well}</b><br>{x_label}: %{{x}}<br>{y_label}: %{{y:.1f}}<extra>Otros</extra>",
+            ))
+            grey_shown = True
+
+    # ── Color: top 10, coloreados por año de inicio ───────────────────────────
+    year_shown = set()
+    for well in highlight_wells:
         wd = well_data[well_data["sigla"] == well].sort_values(x_col)
         if wd.empty:
             continue
-        yr = int(wd["start_year"].iloc[0]) if "start_year" in wd.columns and pd.notna(wd["start_year"].iloc[0]) else "Sin dato"
+        yr = int(wd["start_year"].iloc[0]) if pd.notna(wd["start_year"].iloc[0]) else "Sin dato"
         color = year_color_map.get(yr, "#888888")
         show_legend = yr not in year_shown
         year_shown.add(yr)
@@ -238,11 +271,12 @@ def build_top10_chart(
             name=str(yr),
             legendgroup=str(yr),
             showlegend=show_legend,
-            line=dict(color=color),
+            line=dict(color=color, width=2),
+            marker=dict(size=4),
             hovertemplate=f"<b>{well}</b> ({yr})<br>{x_label}: %{{x}}<br>{y_label}: %{{y:.2f}}<extra></extra>",
         ))
 
-    y_range = robust_yaxis_range(well_data[y_col])
+    y_range = robust_yaxis_range(well_data[y_col] if not well_data.empty else pd.Series(dtype=float))
     fig.update_layout(
         title=title,
         xaxis_title=x_label,
@@ -256,11 +290,17 @@ def build_top10_chart(
 
 years_label = ", ".join(str(y) for y in sorted(selected_years))
 
+top_10_oil_data = add_time_zero(top_10_oil_data)
+top_10_gas_data = add_time_zero(top_10_gas_data)
+all_oil_data    = add_time_zero(all_oil_data)
+all_gas_data    = add_time_zero(all_gas_data)
+
 st.plotly_chart(build_top10_chart(
     top_10_oil_data, top_oil_wells,
     "oil_rate", "Caudal de Petróleo (m3/d)",
     f"Top 10 Pozos — Perfil de Producción de Petróleo ({selected_area} | {years_label})",
     use_time_zero,
+    all_well_data=all_oil_data,
 ), use_container_width=True)
 
 st.plotly_chart(build_top10_chart(
@@ -268,6 +308,7 @@ st.plotly_chart(build_top10_chart(
     "gas_rate", "Caudal de Gas (km3/d)",
     f"Top 10 Pozos — Perfil de Producción de Gas ({selected_area} | {years_label})",
     use_time_zero,
+    all_well_data=all_gas_data,
 ), use_container_width=True)
 
 
@@ -905,6 +946,9 @@ peak_df = (
     .reset_index()
     .rename(columns={"sigla": "Pozo"})
 )
+
+# Descartar pozos sin producción real en ningún fluido
+peak_df = peak_df[(peak_df["Qo_pico"] > 0) | (peak_df["Qg_pico"] > 0)].reset_index(drop=True)
 
 rank_fluid = st.radio(
     "Ordenar ranking por:",
