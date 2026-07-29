@@ -522,7 +522,7 @@ with tab_pads:
 
     st.markdown(f"""
     El algoritmo utilizó un **buffer de {PAD_BUFFER_M} m** proyectado en POSGAR 2007 
-    para agrupar pozos que comparten plataforma de perforación.
+    para agrupar pozos que comparten mismo PAD.
     """)
 
     m1, m2, m3, m4 = st.columns(4)
