@@ -26,17 +26,19 @@ else:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
-st.header(":blue[Análisis de Producción No Convencional]")
-st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-st.sidebar.title("Por favor filtrar aquí:")
+company_options = ["Todas las empresas"] + sorted(data_sorted["empresaNEW"].unique())
 
 selected_company = st.sidebar.selectbox(
-    "Seleccione la empresa",
-    options=sorted(data_sorted["empresaNEW"].unique()),
+    "Seleccione la empresa (opcional)",
+    options=company_options,
 )
 
-company_data  = data_sorted[data_sorted["empresaNEW"] == selected_company]
+if selected_company == "Todas las empresas":
+    company_data = data_sorted.copy()
+else:
+    company_data = data_sorted[data_sorted["empresaNEW"] == selected_company]
 color_palette = px.colors.qualitative.Set3
+
 
 
 # ── Company-level stacked area charts ────────────────────────────────────────
