@@ -453,13 +453,13 @@ else:
     qw_lbl_w   = "Qw Pico (m³/d)"
 
 # Filter section
+
 st.markdown("#### 🎯 Filtro de Resaltado")
+
+highlights_p, mode_p = multiselect_filter(sf_work, "prod")
+
 if color_by_year_prod:
-    st.info("ℹ️ Modo 'Colorear por año' activo — el resaltado múltiple está desactivado.")
-    highlights_p = []
-    mode_p       = None
-else:
-    highlights_p, mode_p = multiselect_filter(sf_work, "prod")
+    st.info("Los puntos se colorean por año de campaña.")
 
 # ── Chart 1a ──────────────────────────────────────────────────────────────────
 st.markdown(f"#### {peak_lbl_w} vs {cum_lbl_w}")
