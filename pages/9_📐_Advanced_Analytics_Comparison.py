@@ -380,6 +380,28 @@ data_filtered = data_sorted[data_sorted["tef"] > 0]
 with st.spinner("Cargando datos de fractura…"):
     df_frac = load_frac_data()
 
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR FILTERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+st.sidebar.markdown("## 🎯 Filtros generales")
+
+areas_available = sorted(
+    data_filtered["areayacimiento"]
+    .dropna()
+    .unique()
+)
+
+selected_areas = st.sidebar.multiselect(
+    "Área:",
+    areas_available,
+    key="global_area_filter"
+)
+
+if selected_areas:
+    data_filtered = data_filtered[
+        data_filtered["areayacimiento"].isin(selected_areas)
+    ]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — BENCHMARK DE PRODUCCIÓN
@@ -457,7 +479,7 @@ st.markdown("#### 🎯 Filtro de Resaltado")
 if color_by_year_prod:
     st.info("ℹ️ Modo 'Colorear por año' activo — el resaltado múltiple está desactivado.")
     highlights_p = []
-    mode_p       = multiselect_filter(sf_work, "prod")
+    mode_p       = None
 else:
     highlights_p, mode_p = multiselect_filter(sf_work, "prod")
 
