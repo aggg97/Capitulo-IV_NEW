@@ -456,6 +456,7 @@ else:
 
 st.markdown("#### 🎯 Filtro de Resaltado")
 
+highlights_p=multiselect_filter(sf_work, "prod")
 mode_p = multiselect_filter(sf_work, "prod")
 
 if color_by_year_prod:
