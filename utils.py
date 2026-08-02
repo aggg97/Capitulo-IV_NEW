@@ -42,7 +42,7 @@ COMPANY_REPLACEMENTS = {
     "VISTA ENERGY ARGENTINA SAU":                   "VISTA",
     "Vista Oil & Gas Argentina SA":                 "VISTA",
     "VISTA OIL & GAS ARGENTINA SAU":                "VISTA",
-    "WINTERSHALL DEA ARGENTINA S.A.":               "WINTERSHALL",
+    "WINTERSHALL DEA ARGENTINA S.A":                "WINTERSHALL",
     "WINTERSHALL ENERGIA S.A.":                     "WINTERSHALL",
     "PLUSPETROL S.A.":                              "PLUSPETROL",
     "PLUSPETROL CUENCA NEUQUINA S.R.L.":            "PLUSPETROL",
