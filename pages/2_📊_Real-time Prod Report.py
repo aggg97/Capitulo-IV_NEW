@@ -61,6 +61,17 @@ company_summary_aggregated = (
     .reset_index()
 )
 
+# ── KPIs del período consolidado ──────────────────────────────────────────────
+
+st.subheader("⚡ Producción al Último Período Consolidado")
+
+col1, col2, col3 = st.columns(3)
+col1.metric(label="🔥 Caudal de Gas (MMm³/d)",     value=total_gas_rate_rounded)
+col2.metric(label="🛢️ Caudal de Petróleo (km³/d)", value=total_oil_rate_rounded)
+col3.metric(label="🛢️ Caudal de Petróleo (kbpd)",  value=oil_rate_bpd_rounded)
+
+st.divider()
+
 # ── Gas por empresa ───────────────────────────────────────────────────────────
 
 SEMILOG_HELP = (
