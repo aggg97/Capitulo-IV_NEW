@@ -118,12 +118,21 @@ st.divider()
 st.subheader("🧪 Clasificación de Fluidos: Criterio McCain")
 st.write(
     "A lo largo del dashboard, los pozos son clasificados como **Petrolíferos** o **Gasíferos** "
-    "utilizando el criterio de GOR acumulado según McCain. Los pozos originalmente etiquetados "
-    "como *'Otro tipo'* son reclasificados automáticamente con este criterio."
+    "utilizando el criterio de GOR según McCain, adaptado para pozos no convencionales. "
+    "Los pozos originalmente etiquetados como *'Otro tipo'* son reclasificados automáticamente "
+    "con este criterio."
 )
 st.write(
-    "**Regla**: si el GOR acumulado del pozo supera los **3.000 m³gas / m³oil**, "
-    "el pozo se clasifica como Gasífero; de lo contrario, como Petrolífero."
+    "**Metodología**: en pozos convencionales McCain propone usar el GOR inicial. "
+    "En no convencional, el GOR inicial es artificialmente bajo durante el flujo transiente "
+    "temprano y no representa la composición del fluido del reservorio. "
+    "Por eso se usa el **GOR instantáneo a los 180 días** desde el primer registro de producción "
+    "— punto donde el pozo ya superó el período de limpieza y el GOR refleja mejor el fluido "
+    "del yacimiento. Si el pozo tiene menos de 180 días de historia, se toma el último registro disponible."
+)
+st.write(
+    "**Regla**: GOR instantáneo > **3.000 m³gas / m³oil** a los 180 días → Gasífero. "
+    "Si `Qo = 0` en ese punto → Gasífero directamente. Caso contrario → Petrolífero."
 )
 
 st.image(Image.open("McCain.png"), caption="Clasificación de fluidos según McCain (GOR)", use_container_width=True)

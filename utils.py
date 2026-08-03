@@ -58,46 +58,77 @@ BARRELS_PER_M3 = 6.28981
 
 def get_fluid_classification(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Classifies each well (sigla) as 'Gasífero' or 'Petrolífero' using the
-    McCain GOR criterion (GOR > 3000 → Gasífero), and reclassifies wells
-    originally tagged as 'Otro tipo' using this criterion.
+    Classifies each well (sigla) as 'Gasífero' or 'Petrolífero' using a
+    modified McCain GOR criterion adapted for unconventional wells.
+
+    Classification method
+    ─────────────────────
+    Uses the **instantaneous GOR at ~180 days** from first production, which
+    better represents the reservoir fluid composition in unconventional wells
+    than the initial GOR (which is artificially low during early transient flow)
+    or the cumulative life GOR (which drifts as the well matures).
+
+    - Reference point: the production record closest to 180 days after the
+      well's first date. If the well has fewer than 180 days of history, the
+      last available record is used.
+    - Instantaneous GOR = gas_rate / oil_rate × 1000 at that point.
+    - If oil_rate = 0 at the reference point → classified as Gasífero directly.
+    - Threshold: GOR > 3 000 → Gasífero, otherwise → Petrolífero.
+
+    Wells originally tagged as 'Otro tipo' in tipopozo are reclassified using
+    this criterion. Wells already tagged as 'Petrolífero' or 'Gasífero' keep
+    their original label.
 
     Adds 'tipopozoNEW' column to the returned DataFrame.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Must contain: sigla, Np, Gp, Wp, tipopozo.
+        Must contain: sigla, date, gas_rate, oil_rate, tipopozo.
 
     Returns
     -------
     pd.DataFrame
         Original DataFrame with 'tipopozoNEW' merged in.
     """
-    cum = (
-        df.groupby("sigla")[["Np", "Gp", "Wp"]]
-        .max()
-        .reset_index()
+    TARGET_DAYS = 180
+
+    df_sorted = df.sort_values(["sigla", "date"])
+
+    # For each well, find the record closest to TARGET_DAYS from first date
+    first_dates = df_sorted.groupby("sigla")["date"].min().rename("first_date")
+    df_ref = df_sorted.merge(first_dates, on="sigla")
+    df_ref["days_since_start"] = (df_ref["date"] - df_ref["first_date"]).dt.days
+    df_ref["dist_to_target"]   = (df_ref["days_since_start"] - TARGET_DAYS).abs()
+
+    # Pick the closest record per well (ties broken by taking the later date)
+    ref_rows = (
+        df_ref.sort_values(["sigla", "dist_to_target", "date"])
+        .groupby("sigla", as_index=False)
+        .first()
     )
 
-    cum["GOR"] = (cum["Gp"] / cum["Np"] * 1000).fillna(100_000)
-    cum["WOR"] = (cum["Wp"] / cum["Np"]).fillna(100_000)
-    cum["WGR"] = (cum["Wp"] / cum["Gp"] * 1000).fillna(100_000)
+    # Instantaneous GOR at reference point
+    ref_rows["GOR_ref"] = (
+        ref_rows["gas_rate"] / ref_rows["oil_rate"].replace(0, float("nan")) * 1000
+    )
 
-    cum["Fluido McCain"] = cum.apply(
-        lambda r: "Gasífero" if r["Np"] == 0 or r["GOR"] > 3_000 else "Petrolífero",
+    ref_rows["Fluido McCain"] = ref_rows.apply(
+        lambda r: "Gasífero"
+        if (r["oil_rate"] == 0 or pd.isna(r["GOR_ref"]) or r["GOR_ref"] > 3_000)
+        else "Petrolífero",
         axis=1,
     )
 
     tipopozo_unique = df[["sigla", "tipopozo"]].drop_duplicates(subset=["sigla"])
-    cum = cum.merge(tipopozo_unique, on="sigla", how="left")
+    ref_rows = ref_rows.merge(tipopozo_unique, on="sigla", how="left")
 
-    cum["tipopozoNEW"] = cum.apply(
+    ref_rows["tipopozoNEW"] = ref_rows.apply(
         lambda r: r["Fluido McCain"] if r["tipopozo"] == "Otro tipo" else r["tipopozo"],
         axis=1,
     )
 
-    return df.merge(cum[["sigla", "tipopozoNEW"]], on="sigla", how="left")
+    return df.merge(ref_rows[["sigla", "tipopozoNEW"]], on="sigla", how="left")
 
 
 # ── Fracture data loader ──────────────────────────────────────────────────────
