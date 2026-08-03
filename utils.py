@@ -120,8 +120,15 @@ def get_fluid_classification(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
 
-    tipopozo_unique = df[["sigla", "tipopozo"]].drop_duplicates(subset=["sigla"])
-    ref_rows = ref_rows.merge(tipopozo_unique, on="sigla", how="left")
+    # tipopozo already present in ref_rows (came from df via df_ref → groupby.first())
+    # Resolve any merge suffix ambiguity: prefer tipopozo without suffix, fall back to _x
+    if "tipopozo" not in ref_rows.columns:
+        if "tipopozo_x" in ref_rows.columns:
+            ref_rows = ref_rows.rename(columns={"tipopozo_x": "tipopozo"})
+        else:
+            # Last resort: pull from original df
+            tipopozo_unique = df[["sigla", "tipopozo"]].drop_duplicates(subset=["sigla"])
+            ref_rows = ref_rows.merge(tipopozo_unique, on="sigla", how="left")
 
     ref_rows["tipopozoNEW"] = ref_rows.apply(
         lambda r: r["Fluido McCain"] if r["tipopozo"] == "Otro tipo" else r["tipopozo"],
