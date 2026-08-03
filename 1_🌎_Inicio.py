@@ -145,35 +145,46 @@ st.divider()
 st.subheader("🗂️ Índice de Páginas")
 
 pages = [
-    ("📊 Producción General", "pages/2_📊_Real-time Production Report.py",
-     "Evolución de caudales de gas y petróleo por empresa y por campaña (vintage). "
-     "Incluye métricas operativas avanzadas: semáforo YoY, variación porcentual, "
-     "evolución de GOR/WOR/WGR y market share por operador."),
-    ("🧮 Análisis de Producción", "pages/2_🧮_Production_Analysis.py",
-     "Análisis de producción agregada con filtros por empresa, área y tipo de recurso."),
-    ("📊 Análisis por Pozo Individual", "pages/3_📊_Single-well_Analysis.py",
-     "Curvas de decline, producción acumulada y métricas por pozo. "
-     "Ideal para evaluar el desempeño individual."),
-    ("📊 Comparación Multi-Pozo", "pages/4_📊_Multi-well_Comparison.py",
-     "Comparación de curvas de producción entre múltiples pozos seleccionados."),
-    ("🏆 Ranking y Records", "pages/5_🏆_Ranking.py",
-     "Pozos de mayor producción pico y acumulada. Benchmarks de completación "
-     "(lateral length, etapas, proppant) por campaña y empresa."),
-    ("👩‍🔧 Reporte FracData en Tiempo Real", "pages/6_👩‍🔧_Real-time FracData Report.py",
-     "Evolución P10/P50/P90 de indicadores de completación y productividad. "
-     "Análisis por área con overlay comparativo."),
-    ("🚨 Watchlist", "pages/7_🚨_Watchlist.py",
-     "Pozos con comportamiento atípico o señales de alerta operativa."),
-    ("🗂️ Gestión de Datos", "pages/8_🗂️_Data_Management.py",
-     "Exploración, filtrado y exportación del dataset completo de producción."),
-    ("📐 Análisis Avanzado Comparativo", "pages/9_📐_Advanced_Analytics_Comparison.py",
-     "Benchmarks de cuadrantes de producción y completación con highlights "
-     "por empresa, área o pozo individual."),
-    ("🗺️ Análisis Geoespacial", "pages/10_🗺️ _Geospacial_Analysis.py",
-     "Mapa de pozos con capa de producción, empresa y campaña."),
+    ("📊 Real-time Production Report",
+     "Visualización de la evolución de la producción de petróleo, gas y agua por empresa, área y campaña. "
+     "Incluye indicadores clave de desempeño (KPIs) como variación interanual (YoY), semáforo de tendencias, "
+     "evolución de GOR, WOR y WGR, participación de mercado (market share) y métricas operativas agregadas."),
+    ("🧮 Análisis de Producción",
+     "Análisis detallado mediante gráficos de diagnóstico para evaluar tendencias productivas. "
+     "Permite segmentar la información por empresa, área, formación, tipo de recurso y campaña "
+     "para identificar patrones de desempeño."),
+    ("📈 Análisis por Pozo Individual",
+     "Evaluación del desempeño de cada pozo mediante curvas de producción, análisis de declinación, "
+     "producción acumulada e indicadores operativos. Ideal para estudiar el comportamiento y la productividad individual."),
+    ("📊 Comparación Multi-Pozo",
+     "Comparación simultánea de múltiples pozos mediante curvas de producción normalizadas y acumuladas, "
+     "facilitando el análisis de desempeño entre campañas, operadores o áreas."),
+    ("🏆 Ranking y Récords",
+     "Ranking de los pozos con mayor producción pico y acumulada. Incluye benchmarks de completación "
+     "(longitud lateral, número de etapas, volumen de proppant, intensidad de estimulación y otros parámetros) "
+     "segmentados por campaña, empresa y área."),
+    ("👩‍🔧 Reporte FracData en Tiempo Real",
+     "Seguimiento en tiempo real de indicadores de completación utilizando estadísticas P10, P50 y P90. "
+     "Permite monitorear la evolución de las estrategias de fractura y su impacto en la productividad de los pozos."),
+    ("🚨 Watchlist",
+     "Monitoreo automático de los pozos con mejor desempeño productivo en la actualidad. "
+     "Destaca nuevos récords, incrementos significativos de producción y pozos que requieren seguimiento."),
+    ("🗂️ Gestión de Datos",
+     "Herramientas para explorar, filtrar y exportar el conjunto completo de datos de producción. "
+     "Incluye análisis de calidad de datos, detección de información faltante o inconsistente, "
+     "cobertura temporal y completitud por empresa y área."),
+    ("📐 Análisis Avanzado Comparativo",
+     "Benchmarks avanzados mediante gráficos de cuadrantes y análisis estadísticos. "
+     "Incluye comparación de desempeño entre empresas, áreas y pozos individuales, análisis por percentiles, "
+     "métricas normalizadas (por etapas, longitud lateral u otras variables) y evaluación de productividad "
+     "versus parámetros de completación."),
+    ("🗺️ Análisis Geoespacial",
+     "Evaluación espacial de la producción mediante agrupación de pozos en pads utilizando GeoPandas. "
+     "Permite reducir sesgos asociados a la interferencia entre pozos (parent-child wells), analizar la "
+     "influencia del desarrollo del pad y realizar comparaciones más robustas entre áreas y operadores."),
 ]
 
-for name, _, description in pages:
+for name, description in pages:
     with st.container():
         st.markdown(f"**{name}**")
         st.caption(description)
