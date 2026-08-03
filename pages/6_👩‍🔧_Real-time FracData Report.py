@@ -34,11 +34,7 @@ else:
 
 st.header(":blue[Reporte Extensivo de Completacion y Produccion en Vaca Muerta]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-st.sidebar.image(Image.open("McCain.png"))
-st.sidebar.caption(
-    "Los pozos clasificados como Otro tipo son reclasificados como "
-    "Gasíferos o Petrolíferos usando el criterio de GOR segun McCain."
-)
+
 
 
 # ── Data preparation ──────────────────────────────────────────────────────────

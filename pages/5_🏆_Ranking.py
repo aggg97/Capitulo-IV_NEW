@@ -36,11 +36,7 @@ else:
 
 st.header(":blue[Ranking y Records]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-st.sidebar.image(Image.open("McCain.png"))
-st.sidebar.caption(
-    "Nota: Los pozos clasificados como 'Otro tipo' son reclasificados como "
-    "'Gasíferos' o 'Petrolíferos' usando el criterio de GOR según McCain."
-)
+
 
 data_filtered = data_sorted[data_sorted["tef"] > 0]
 

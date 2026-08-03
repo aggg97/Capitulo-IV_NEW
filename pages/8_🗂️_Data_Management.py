@@ -2,7 +2,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from PIL import Image
 
 from utils import (
     COMPANY_REPLACEMENTS,
@@ -40,14 +39,7 @@ else:
 
 st.header(":blue[Reporte Extensivo de Completación y Producción en Vaca Muerta]")
 st.sidebar.image(Image.open("Vaca Muerta rig.png"))
-st.sidebar.caption("")
-st.sidebar.caption(
-    "Nota: Para excluir los pozos clasificados como 'Otro tipo', "
-    "se crea una nueva columna que utiliza la definición de fluido basada "
-    "en el criterio de GOR según McCain. Esto permite reclasificar estos pozos como "
-    "'Gasíferos' o 'Petrolíferos' de manera más precisa."
-)
-st.sidebar.image(Image.open("McCain.png"))
+
 
 
 # ── Data preparation ──────────────────────────────────────────────────────────
