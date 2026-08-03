@@ -3,9 +3,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from dateutil.relativedelta import relativedelta
 from PIL import Image
 
-from utils import COMPANY_REPLACEMENTS, BARRELS_PER_M3
+from utils import BARRELS_PER_M3, COMPANY_REPLACEMENTS
 
 
 # ── Session state guard ───────────────────────────────────────────────────────
@@ -64,6 +65,15 @@ company_summary_aggregated = (
 # ── KPIs del período consolidado ──────────────────────────────────────────────
 
 st.subheader("⚡ Producción al Último Período Consolidado")
+
+data_filtered = data_sorted[data_sorted["tef"] > 0]
+latest_date_non_official = data_filtered["date"].max()
+latest_date = latest_date_non_official - relativedelta(months=1)
+latest_data = data_filtered[data_filtered["date"] == latest_date]
+
+total_gas_rate_rounded = round(latest_data["gas_rate"].sum() / 1000, 1)
+total_oil_rate_rounded = round(latest_data["oil_rate"].sum() / 1000, 1)
+oil_rate_bpd_rounded   = round(total_oil_rate_rounded * BARRELS_PER_M3, 1)
 
 col1, col2, col3 = st.columns(3)
 col1.metric(label="🔥 Caudal de Gas (MMm³/d)",     value=total_gas_rate_rounded)

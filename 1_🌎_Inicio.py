@@ -136,7 +136,7 @@ st.divider()
 st.subheader("🗂️ Índice de Páginas")
 
 pages = [
-    ("📊 Producción General", "pages/2_📊_Produccion_General.py",
+    ("📊 Producción General", "pages/2_📊_Real-time Production Report.py",
      "Evolución de caudales de gas y petróleo por empresa y por campaña (vintage). "
      "Incluye métricas operativas avanzadas: semáforo YoY, variación porcentual, "
      "evolución de GOR/WOR/WGR y market share por operador."),
